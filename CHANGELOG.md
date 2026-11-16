@@ -1,0 +1,101 @@
+# Changelog
+
+All notable changes to the **ScanSplitter** project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [1.3.0] - 2026-11-13
+
+### Added
+- **Standalone Windows Executable (`dist\ScanSplitter.exe`)**:
+  - Full single-file executable distribution compiled with PyInstaller that runs on any Windows 10/11 machine without needing Python, pip, or administrator privileges.
+  - Custom 3D application icon embedded directly into the `.exe` binary.
+  - Bundled high-DPI assets, OpenCV C++ libraries, Qt6 runtimes, and piexif metadata helpers with runtime extraction via `sys._MEIPASS`.
+- **One-Click Executable Builder (`build_exe.bat`)**:
+  - Automated script that cleans prior builds, packages assets and icons, and produces a freshly compiled `dist\ScanSplitter.exe`.
+- **Automated Python Installation via `winget` in Batch Launchers**:
+  - `Run ScanSplitter with Console.bat` (and alias `start.bat`) now performs multi-location Python discovery across `PATH`, `py` launcher, and local user/system installation paths.
+  - If Python is not present on the machine, the script automatically triggers a silent installation of Python 3.12 using Windows Package Manager (`winget`), immediately locates the new executable without requiring a Windows reboot, creates `.venv`, installs requirements, and launches the app.
+- **Convenience Aliases**:
+  - Added root `start.bat` and `run.bat` aliases to make launching effortless from any terminal or shortcut.
+
+---
+
+## [1.2.0] - 2026-11-13
+
+### Added
+- **Custom Modern 3D App Icon (`assets/icon.png` & `assets/icon.ico`)**:
+  - High-resolution Fluent/macOS style 3D squircle desktop icon featuring a glowing scanner platen, luminous optical scan line, glossy photos lifting and separating, and neon cyan corner crop brackets.
+  - Multi-resolution Windows icon asset (`icon.ico` bundling 16x16, 24x24, 32x32, 48x48, 64x64, 128x128, and 256x256 formats).
+  - Explicit Windows `AppUserModelID` (`scansplitter.photo.cropper.v1`) registration via Windows Shell API so the custom icon appears on the Windows taskbar and Alt+Tab switcher rather than the generic Python icon.
+  - Window titlebar branding and application welcome drop prompt graphic.
+
+---
+
+## [1.1.0] - 2026-11-12
+
+### Added
+- **Silent Windows Launchers (`run.bat` & `run_no_console.bat`)**:
+  - Starts the application using `pythonw.exe` without keeping any background command prompt or terminal window open.
+- **Automatic Fit in View on Image Load**:
+  - The scanned image automatically scales to fit comfortably within the window upon loading or dropping.
+- **Source Folder Default Export Location**:
+  - The export dialog now defaults directly to the directory containing the source scan file.
+- **Rectangular vs. Skewed Resize Toggle (`📐 Lock Rectangular` / `🔓 Free Skew`)**:
+  - Toggles between rigid 90-degree orthogonal rectangular resizing and free quadrilateral unwarping.
+  - When locked, dragging any of the 4 corner handles preserves strict 90-degree right angles with the opposite corner acting as the fixed anchor.
+  - When unlocked, individual corners can be skewed freely to correct perspective keystoning on crooked or curved prints.
+- **On-the-Fly `Shift` Key Modifier**:
+  - Holding the `Shift` key while dragging any corner temporarily inverts the rectangular lock setting without requiring a toolbar click.
+- **One-Click Corner Squaring / Straightening**:
+  - `⏹ Square Box` in the main toolbar snaps the selected crop box into an exact 90-degree rectangle aligned with its primary axis.
+  - `⏹ Square` button on each sidebar photo card to square individual photos directly.
+  - `⏹ Square All` button in the sidebar header to orthogonalize all detected boxes simultaneously.
+- **Multi-Button Canvas Panning**:
+  - Panning is now supported via **Space + Left Click Drag**, **Middle Click Drag**, or **Right Click Drag**.
+
+### Fixed
+- **Eliminated Distorted Trapezoid Selections**:
+  - Replaced arbitrary polygon approximation with true rotated bounding rectangles (`cv2.minAreaRect`). All detected photos now default to strict 90-degree right angles.
+- **Angle Snapping for Level Scans**:
+  - Small contour noise angles within ±3.0° automatically snap to level 0.0° rectangles, while genuine photo tilts are accurately preserved.
+- **Resolved Overlapping & Merged Containers**:
+  - Implemented hierarchical contour analysis and rotated rectangle intersection filtering to discard outer merged containers that enclose multiple photos, preventing overlapping boxes.
+- **Calibrated Adaptive Sensitivity Range**:
+  - Grounded detection thresholds in image-specific Otsu adaptive calculations so sensitivity 1 no longer shatters photos into jagged shapes and sensitivity 100 no longer selects the entire image.
+  - Added a one-click `↺ 50` reset button and descriptive labels.
+- Fixed `AttributeError: type object 'KeyboardModifier' has no attribute 'SpaceModifier'` when pressing mouse buttons on the canvas.
+- Improved viewport bounds and handle drag responsiveness under high-DPI scaling.
+
+---
+
+## [1.0.0] - 2026-11-12
+
+### Initial Release
+- **Complete Architecture Rewrite**:
+  - Built from scratch as a high-performance native desktop application with PyQt6, OpenCV, and Pillow.
+- **Multi-Photo Scanner Bed Detection**:
+  - Robust multi-method computer vision engine estimating platen background colors (light or dark platen lids).
+  - Perceptual LAB color distance combined with Canny edge detection and morphology.
+  - Minimum area rotated bounding box fitting with adjustable detection sensitivity.
+- **Interactive QGraphics Canvas**:
+  - Rotated crop boxes with 4 draggable corner handles, 4 edge resize handles, and an intuitive rotation handle.
+  - Whole-box repositioning by dragging inside the selection.
+  - Manual crop creation tool (`➕ Add Box`) for user-drawn selections.
+- **Real-Time Magnifying Loupe View**:
+  - High-precision live loupe widget (4x, 6x, 8x zoom) with center crosshairs and pixel coordinates to align corners down to the exact edge.
+- **Photo Dates & EXIF Metadata**:
+  - Individual date selection per photo card.
+  - Global Batch Date setter ("Apply to All").
+  - Automatic embedding into standard EXIF tags (`DateTimeOriginal`, `DateTimeDigitized`, `DateTime`).
+- **High-Fidelity Perspective Extraction & Export**:
+  - Perspective transforms at full scanner resolution to deskew and extract straightened photos.
+  - Export to JPEG (with quality control) or lossless PNG.
+  - Customizable filename formatting templates.
+  - Automatic folder opening in Windows Explorer upon completion.
+- **Windows Launcher**:
+  - One-click `start.bat` launcher that automatically sets up and verifies the `.venv` virtual environment.
+

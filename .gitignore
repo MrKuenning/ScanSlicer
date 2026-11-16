@@ -1,0 +1,65 @@
+.DS_Store
+node_modules
+Extra_Files
+Frontend Compile.bat
+Frontend Start for Dev.bat
+
+
+# Python virtual environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.venv
+
+
+# local env files
+.env.local
+.env.*.local
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+#configuration files
+config.json
+
+#database files
+lora_manager.db
+*.db
+*.db-wal
+*.db-shm
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+Concept.txt
+
+# PyInstaller / Build artifacts
+build/
+dist/
+*.spec
+*.exe
+*.lnk
+
+# Python tooling / caches
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Windows
+Thumbs.db
+Desktop.ini
