@@ -1,7 +1,7 @@
-# ScanSplitter
+# ScanSlicer
 
 <p align="center">
-  <img src="assets/icon.png" width="160" height="160" alt="ScanSplitter App Icon" />
+  <img src="assets/icon.png" width="160" height="160" alt="ScanSlicer App Icon" />
 </p>
 
 A modern native desktop application for automatically detecting, deskewing, and splitting multiple crooked photos from flatbed scanner bed images.
@@ -18,15 +18,15 @@ A modern native desktop application for automatically detecting, deskewing, and 
 
 ### Windows
 
-ScanSplitter can run as a **standalone zero-install executable** (no Python needed) or directly from source with **automated Python bootstrapping**:
+ScanSlicer can run as a **standalone zero-install executable** (no Python needed) or directly from source with **automated Python bootstrapping**:
 
 #### 1. Standalone Executable (No Python Needed)
-- Download the pre-built `ScanSplitter.exe` from **GitHub Releases** — Python, PyQt6, OpenCV, and all assets are bundled inside, so you can run it immediately on any Windows 10/11 PC.
+- Download the pre-built `ScanSlicer.exe` from **GitHub Releases** — Python, PyQt6, OpenCV, and all assets are bundled inside, so you can run it immediately on any Windows 10/11 PC.
 - To compile the `.exe` yourself from source, run:
   ```text
   releases\Compile EXE.bat
   ```
-  This outputs the standalone executable to `releases\ScanSplitter.exe`.
+  This outputs the standalone executable to `releases\ScanSlicer.exe`.
 
 #### 2. Install & Run from Source
 - **Install dependencies only** (creates `.venv` and installs `requirements.txt`; auto-installs Python 3.12 via `winget` if missing):
@@ -128,7 +128,7 @@ Requires **Python 3.10+**.
 ## Project Structure
 
 ```text
-App1 - ScanSplitter/
+App1 - ScanSlicer/
 ├── app/
 │   ├── __init__.py          # Package initialization (v1.1.0)
 │   ├── detector.py          # Multi-method scanner bed crop detection & deskewing
@@ -157,4 +157,4 @@ App1 - ScanSplitter/
 
 ## Release Notes
 
-See [CHANGELOG.md](file:///c:/Users/Brady/Projects/ScanSplitter/App1%20-%20ScanSplitter/CHANGELOG.md) for full version history and release notes.
+See [CHANGELOG.md](CHANGELOG.md) for full version history and release notes.

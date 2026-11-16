@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0.."
 
 echo ========================================================
-echo           ScanSplitter - Windows Executable Builder
+echo           ScanSlicer - Windows Executable Builder
 echo ========================================================
 echo.
 
@@ -29,10 +29,10 @@ if %ERRORLEVEL% neq 0 (
 
 echo [1/3] Cleaning previous build artifacts...
 if exist "build" rd /s /q "build"
-if exist "releases\ScanSplitter.exe" del /f /q "releases\ScanSplitter.exe"
+if exist "releases\ScanSlicer.exe" del /f /q "releases\ScanSlicer.exe"
 
 echo [2/3] Compiling standalone executable with PyInstaller...
-echo       - Output: releases\ScanSplitter.exe
+echo       - Output: releases\ScanSlicer.exe
 echo       - Mode: Standalone single-file (--onefile)
 echo       - Window: GUI no-console (--noconsole)
 echo       - Icon: assets\icon.ico
@@ -43,7 +43,7 @@ call .venv\Scripts\python.exe -m PyInstaller ^
     --onefile ^
     --clean ^
     --distpath "releases" ^
-    --name "ScanSplitter" ^
+    --name "ScanSlicer" ^
     --icon "assets\icon.ico" ^
     --add-data "assets;assets" ^
     --hidden-import piexif ^
@@ -63,7 +63,7 @@ echo ========================================================
 echo [3/3] Build succeeded!
 echo ========================================================
 echo Standalone executable created at:
-echo   %~dp0ScanSplitter.exe
+echo   %~dp0ScanSlicer.exe
 echo.
 echo You can distribute this single file to any Windows PC
 echo without needing Python installed.

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the **ScanSplitter** project are documented in this file.
+All notable changes to the **ScanSlicer** project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -10,12 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.3.0] - 2026-11-13
 
 ### Added
-- **Standalone Windows Executable (`dist\ScanSplitter.exe`)**:
+- **Standalone Windows Executable (`releases\ScanSlicer.exe`)**:
   - Full single-file executable distribution compiled with PyInstaller that runs on any Windows 10/11 machine without needing Python, pip, or administrator privileges.
   - Custom 3D application icon embedded directly into the `.exe` binary.
   - Bundled high-DPI assets, OpenCV C++ libraries, Qt6 runtimes, and piexif metadata helpers with runtime extraction via `sys._MEIPASS`.
-- **One-Click Executable Builder (`build_exe.bat`)**:
-  - Automated script that cleans prior builds, packages assets and icons, and produces a freshly compiled `dist\ScanSplitter.exe`.
+- **One-Click Executable Builder (`releases\Compile EXE.bat`)**:
+  - Automated script that cleans prior builds, packages assets and icons, and produces a freshly compiled `releases\ScanSlicer.exe`.
 - **Automated Python Installation via `winget` in Batch Launchers**:
   - `Run ScanSplitter with Console.bat` (and alias `start.bat`) now performs multi-location Python discovery across `PATH`, `py` launcher, and local user/system installation paths.
   - If Python is not present on the machine, the script automatically triggers a silent installation of Python 3.12 using Windows Package Manager (`winget`), immediately locates the new executable without requiring a Windows reboot, creates `.venv`, installs requirements, and launches the app.
