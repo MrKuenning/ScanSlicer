@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] - 2026-11-16
+
+### Improved
+- **Photo Detection Engine (`app/detector.py`)**:
+  - Anchored LAB color-distance thresholding to the measured platen noise floor (with a bright-pixel fallback when photos touch the outer scan border), preventing global Otsu from erasing off-white borders, light grey portraits, and bright skies.
+  - Switched to `cv2.RETR_EXTERNAL` with `3×3` morphological closing and box-area NMS so inner photo details never replace outer photo boundaries.
+  - Added oversized-contour splitting via `3×3` morphological opening on `mask_diff` to separate tight multi-photo grids across narrow gutters.
+  - Fixed `snap_rect_angle` to swap `w` and `h` whenever normalizing `angle` by `±90°`, preventing portrait photos from being rotated sideways.
+
+### Changed
+- **Project Structure & Cross-Platform Launchers**:
+  - Moved application entry point to `app/main.py`.
+  - Added Linux/macOS install and run `.sh` scripts alongside Windows `.bat` scripts and `releases\Compile EXE.bat` (outputs `releases\ScanSlicer.exe`).
+  - Updated `.gitignore` for PyInstaller/build artifacts, Python tool caches, and Windows metadata.
+  - Updated `README.md` and `CHANGELOG.md` branding to **ScanSlicer**.
+
+---
+
 ## [1.3.0] - 2026-11-13
 
 ### Added

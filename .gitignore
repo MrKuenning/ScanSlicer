@@ -16,7 +16,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv
-
+releases
+releases2
 
 # local env files
 .env.local

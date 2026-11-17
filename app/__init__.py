@@ -4,7 +4,7 @@ ScanSplitter Package
 import sys
 from pathlib import Path
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 
 def get_asset_path(relative_name: str) -> Path:

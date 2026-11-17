@@ -48,15 +48,13 @@ def snap_rect_angle(rect: Tuple[Tuple[float, float], Tuple[float, float], float]
     """
     (cx, cy), (w, h), angle = rect
 
-    # OpenCV 4.5+ minAreaRect angle convention
-    if w < h:
-        w, h = h, w
-        angle += 90.0
-
+    # Normalize angle into (-45, 45]; swap w and h whenever rotating by 90 degrees
     while angle > 45.0:
         angle -= 90.0
+        w, h = h, w
     while angle <= -45.0:
         angle += 90.0
+        w, h = h, w
 
     # Snap to upright if within snap_threshold
     if abs(angle) < snap_threshold:
@@ -116,6 +114,40 @@ def straighten_quad(corners: np.ndarray) -> np.ndarray:
     return np.array([new_tl, new_tr, new_br, new_bl], dtype=np.float32)
 
 
+def _contours_to_candidates(contours, min_area: float, max_area: float):
+    """Converts external contours into validated, angle-snapped rectangle candidates."""
+    candidates = []
+    oversized = []
+    for c in contours:
+        hull_area = cv2.contourArea(cv2.convexHull(c))
+        if hull_area < min_area:
+            continue
+
+        rect = cv2.minAreaRect(c)
+        snapped_rect = snap_rect_angle(rect, snap_threshold=3.0)
+        (cx, cy), (rw, rh), angle = snapped_rect
+        box_area = float(rw * rh)
+
+        if box_area < min_area:
+            continue
+        if box_area > max_area:
+            oversized.append(c)
+            continue
+
+        # Reject slivers with extreme aspect ratio
+        if min(rw, rh) < 25:
+            continue
+        aspect = max(rw, rh) / (min(rw, rh) + 1e-5)
+        if aspect > 12:
+            continue
+
+        candidates.append({
+            "area": box_area,
+            "rect": snapped_rect,
+        })
+    return candidates, oversized
+
+
 def detect_scanner_photos(
     image: np.ndarray,
     sensitivity: int = 50,
@@ -149,8 +181,8 @@ def detect_scanner_photos(
 
     wh, ww = work_img.shape[:2]
 
-    # 2. Sample outer borders to estimate scanner platen background color
-    border_width = max(6, int(min(wh, ww) * 0.02))
+    # 2. Sample outer borders (1% strip) to estimate scanner platen background color & noise floor
+    border_width = max(4, int(min(wh, ww) * 0.01))
     borders = np.concatenate([
         work_img[0:border_width, :].reshape(-1, 3),
         work_img[-border_width:, :].reshape(-1, 3),
@@ -159,100 +191,75 @@ def detect_scanner_photos(
     ], axis=0)
     bg_color = np.median(borders, axis=0)
 
-    # 3. Method A: Perceptual LAB Color distance from background
+    # 3. Method A: Perceptual LAB Color distance anchored to platen background noise
     work_lab = cv2.cvtColor(work_img, cv2.COLOR_BGR2LAB)
     bg_lab = cv2.cvtColor(np.uint8([[bg_color]]), cv2.COLOR_BGR2LAB)[0, 0]
     diff_lab = np.linalg.norm(work_lab.astype(np.float32) - bg_lab.astype(np.float32), axis=2)
 
-    # Adaptive Otsu calculation on distance map
-    max_d = max(float(diff_lab.max()), 1.0)
-    diff_u8 = np.clip(diff_lab * (255.0 / max_d), 0, 255).astype(np.uint8)
-    otsu_val, _ = cv2.threshold(diff_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    lab_otsu = (otsu_val / 255.0) * max_d
+    borders_lab = cv2.cvtColor(borders.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_BGR2LAB).reshape(-1, 3)
+    border_diffs = np.linalg.norm(borders_lab.astype(np.float32) - bg_lab.astype(np.float32), axis=1)
 
-    # Sensitivity mapping: safely scales the adaptive threshold
-    # Higher sensitivity = slightly lower threshold (detects subtler borders)
-    # Never collapses to 0 (which would select entire image) or blows up to infinity
-    factor = 1.35 - (sensitivity / 100.0) * 0.70
-    thresh_val = float(np.clip(lab_otsu * factor, 12.0, 50.0))
+    # If the outer border is non-uniform (photos touch the scan edge), fall back to low-gradient
+    # bright/uniform pixels (e.g. white scanner gutters) for background estimation.
+    if float(np.percentile(border_diffs, 70)) > 12.0:
+        l_chan_tmp = work_lab[:, :, 0]
+        bright_mask = l_chan_tmp >= np.percentile(l_chan_tmp, 90)
+        if np.any(bright_mask):
+            bg_color = np.median(work_img[bright_mask], axis=0)
+            bg_lab = cv2.cvtColor(np.uint8([[bg_color]]), cv2.COLOR_BGR2LAB)[0, 0]
+            diff_lab = np.linalg.norm(work_lab.astype(np.float32) - bg_lab.astype(np.float32), axis=2)
+            bg_noise = 3.0
+        else:
+            bg_noise = 6.0
+    else:
+        bg_noise = float(np.clip(np.percentile(border_diffs, 70), 1.5, 10.0))
+
+    # Sensitivity mapping (1..100):
+    # Higher sensitivity detects subtler paper borders and bright/light-toned photo regions.
+    # Clamped above the measured platen noise floor to avoid background speckles.
+    base_thresh = 20.0 - (sensitivity / 100.0) * 15.0
+    thresh_val = max(base_thresh, bg_noise * 2.2)
     mask_diff = (diff_lab > thresh_val).astype(np.uint8) * 255
 
-    # 4. Method B: Bilateral-filtered edge detection
-    gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.bilateralFilter(gray, 7, 50, 50)
-    edges = cv2.Canny(blurred, 30, 90)
+    # 4. Method B: Bilateral-filtered lightness edge detection (catches white/off-white photo borders)
+    l_chan = work_lab[:, :, 0]
+    blurred_l = cv2.bilateralFilter(l_chan, 7, 40, 40)
+    canny_low = int(max(8, 40 - sensitivity * 0.28))
+    canny_high = canny_low * 3
+    edges = cv2.Canny(blurred_l, canny_low, canny_high)
 
     # Combine distance mask and edges
     combined_mask = cv2.bitwise_or(mask_diff, edges)
 
-    # 5. Small morphological closing (5x5) to prevent bridging narrow photo gutters
-    kernel_size = 5
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+    # 5. Small morphological closing (3x3) to seal 1-2px border gaps without bridging narrow gutters
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     closed = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
 
-    # 6. Find contours with full hierarchy (to detect and discard merged containers)
-    contours, hierarchy = cv2.findContours(closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    # 6. Find external contours so inner details/frames never replace the outer photo boundary
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     min_area = total_area * min_area_ratio * (scale * scale)
     max_area = total_area * max_area_ratio * (scale * scale)
 
-    raw_candidates = []
-    if hierarchy is not None and len(contours) > 0:
-        hier = hierarchy[0]
-        for idx, c in enumerate(contours):
-            area = cv2.contourArea(c)
-            if area < min_area or area > max_area:
-                continue
+    raw_candidates, oversized = _contours_to_candidates(contours, min_area, max_area)
 
-            rect = cv2.minAreaRect(c)
-            snapped_rect = snap_rect_angle(rect, snap_threshold=3.0)
-            (cx, cy), (rw, rh), angle = snapped_rect
+    # If a giant contour (> max_area) swallowed multiple photos across a narrow gutter/border,
+    # split it using mask_diff opened by 3x3 (severs thin edge bridges).
+    if oversized:
+        opened_diff = cv2.morphologyEx(mask_diff, cv2.MORPH_OPEN, kernel)
+        for big_c in oversized:
+            bx, by, bw, bh = cv2.boundingRect(big_c)
+            sub_mask = opened_diff[by:by + bh, bx:bx + bw]
+            sub_contours, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            shifted = [sc + np.array([[[bx, by]]], dtype=sc.dtype) for sc in sub_contours]
+            sub_cands, _ = _contours_to_candidates(shifted, min_area, max_area)
+            raw_candidates.extend(sub_cands)
 
-            # Reject slivers with extreme aspect ratio
-            if min(rw, rh) < 25:
-                continue
-            aspect = max(rw, rh) / (min(rw, rh) + 1e-5)
-            if aspect > 12:
-                continue
-
-            raw_candidates.append({
-                "index": idx,
-                "area": area,
-                "rect": snapped_rect,
-                "contour": c,
-                "has_child": (hier[idx][2] != -1)
-            })
-
-    # Discard merged parent containers that enclose valid child photos
-    filtered_candidates = []
-    for cand in raw_candidates:
-        c_rect = cand["rect"]
-        is_merged_container = False
-
-        # If cand encloses one or more other valid candidates, drop cand
-        for other in raw_candidates:
-            if other["index"] == cand["index"]:
-                continue
-            if other["area"] >= cand["area"]:
-                continue
-
-            ret, pts = cv2.rotatedRectangleIntersection(c_rect, other["rect"])
-            if pts is not None and len(pts) >= 3:
-                inter_area = cv2.contourArea(pts)
-                if inter_area / other["area"] > 0.60:
-                    # cand encloses other photo -> cand is a merged multi-photo blob!
-                    is_merged_container = True
-                    break
-
-        if not is_merged_container:
-            filtered_candidates.append(cand)
-
-    # 7. Non-Maximum Suppression to remove overlapping boxes
+    # 7. Non-Maximum Suppression: prefer larger complete photo boxes over overlapping fragments
     kept_rects = []
-    # Sort candidates by area ascending (prefer individual photos over merged blobs)
-    filtered_candidates.sort(key=lambda x: x["area"])
+    raw_candidates.sort(key=lambda x: x["area"], reverse=True)
 
-    for cand in filtered_candidates:
+    for cand in raw_candidates:
         c_rect = cand["rect"]
         c_area = cand["area"]
         is_duplicate = False
@@ -262,7 +269,7 @@ def detect_scanner_photos(
             if pts is not None and len(pts) >= 3:
                 inter_area = cv2.contourArea(pts)
                 min_a = min(c_area, k_area)
-                # If overlap exceeds 35% of either box, treat as duplicate
+                # If overlap exceeds 35% of the smaller box, treat as duplicate/fragment
                 if inter_area / min_a > 0.35:
                     is_duplicate = True
                     break
