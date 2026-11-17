@@ -6,7 +6,7 @@
 
 A modern native desktop application for automatically detecting, deskewing, and splitting multiple crooked photos from flatbed scanner bed images.
 
-![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)
+![Version](https://img.shields.io/badge/version-1.4.2-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyQt6](https://img.shields.io/badge/UI-PyQt6-green)
 ![OpenCV](https://img.shields.io/badge/Vision-OpenCV-red)

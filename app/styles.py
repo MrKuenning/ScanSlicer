@@ -105,5 +105,30 @@ QToolTip {
     border-radius: 4px;
     font-size: 11px;
 }
+
+/* Dark Calendar Popup */
+QCalendarWidget QWidget {
+    background-color: #1a1e27;
+    color: #e2e8f0;
+    alternate-background-color: #212733;
+}
+QCalendarWidget QToolButton {
+    background-color: #242a36;
+    color: #f1f5f9;
+    border: 1px solid #363e4f;
+    border-radius: 4px;
+    padding: 4px 8px;
+    margin: 2px;
+}
+QCalendarWidget QToolButton:hover {
+    background-color: #00d2ff;
+    color: #0f172a;
+}
+QCalendarWidget QAbstractItemView:enabled {
+    background-color: #161920;
+    color: #e2e8f0;
+    selection-background-color: #00d2ff;
+    selection-color: #0f172a;
+}
 """
 

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.2] - 2026-11-16
+
+### Improved
+- **Smart Date Selector (`app/sidebar.py`, `app/styles.py`, `assets/chevron_down.svg`)**:
+  - Replaced `QDateEdit` in both **Batch Date Setter** and each **Photo Card** with a custom `SmartDatePicker` featuring dedicated **Year** (editable dropdown `1900–2030+`, direct typing `1850–2100`), **Month** (`01 Jan`–`12 Dec`), and **Day** (auto-clamped to valid days per month/year) dropdown selectors.
+  - Added a dark-themed `QCalendarWidget` popup button (`📅`) and crisp SVG dropdown chevrons (`assets/chevron_down.svg`).
+  - Placed **Apply to All** on the **Batch Date Setter** header row so the date picker spans the full sidebar width cleanly.
+
+---
+
 ## [1.4.0] - 2026-11-16
 
 ### Improved

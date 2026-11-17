@@ -8,14 +8,211 @@ import cv2
 import numpy as np
 
 from PyQt6.QtCore import Qt, QDate, pyqtSignal
-from PyQt6.QtGui import QPixmap, QImage, QColor
+from PyQt6.QtGui import QPixmap, QImage, QColor, QIntValidator
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QDateEdit,
-    QScrollArea, QFrame, QSlider, QLineEdit, QSizePolicy
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
+    QComboBox, QCalendarWidget, QDialog, QScrollArea, QFrame, QSlider
 )
 
+from . import get_asset_path
 from .photo_model import PhotoModel
 from .detector import extract_deskewed_crop
+
+
+_MONTH_NAMES = [
+    "01 Jan", "02 Feb", "03 Mar", "04 Apr", "05 May", "06 Jun",
+    "07 Jul", "08 Aug", "09 Sep", "10 Oct", "11 Nov", "12 Dec"
+]
+
+
+class SmartDatePicker(QWidget):
+    """Compact Year / Month / Day selector with a dark-themed calendar popup."""
+
+    dateChanged = pyqtSignal(QDate)
+
+    def __init__(self, initial_date: Optional[QDate] = None, parent=None):
+        super().__init__(parent)
+        self._updating = False
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+
+        chevron_path = get_asset_path("chevron_down.svg")
+        arrow_rule = (
+            f"image: url({chevron_path.as_posix()}); width: 10px; height: 6px;"
+            if chevron_path.exists()
+            else ""
+        )
+
+        field_style = f"""
+            QComboBox {{
+                background-color: #2b3342;
+                color: #ffffff;
+                border: 1px solid #455066;
+                border-radius: 4px;
+                padding: 2px 4px;
+                font-size: 11px;
+                min-height: 20px;
+            }}
+            QComboBox:focus, QComboBox:on {{
+                border-color: #00d2ff;
+            }}
+            QComboBox QLineEdit {{
+                background: transparent;
+                color: #ffffff;
+                border: none;
+                padding: 0px;
+                margin: 0px;
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                border: none;
+                width: 14px;
+            }}
+            QComboBox::down-arrow {{
+                {arrow_rule}
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: #1e2430;
+                color: #ffffff;
+                selection-background-color: #0088cc;
+            }}
+        """
+
+        max_year = max(2030, QDate.currentDate().year() + 1)
+        self.year_combo = QComboBox(self)
+        self.year_combo.setEditable(True)
+        self.year_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.year_combo.addItems([str(y) for y in range(max_year, 1899, -1)])
+        self.year_combo.setMaxVisibleItems(14)
+        self.year_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.year_combo.lineEdit().setValidator(QIntValidator(1850, 2100, self))
+        self.year_combo.lineEdit().setMaxLength(4)
+        self.year_combo.setFixedWidth(58)
+        self.year_combo.setToolTip("Year (pick from list or type 1850–2100)")
+        self.year_combo.setStyleSheet(field_style)
+
+        self.month_combo = QComboBox(self)
+        self.month_combo.addItems(_MONTH_NAMES)
+        self.month_combo.setMaxVisibleItems(12)
+        self.month_combo.setMinimumWidth(66)
+        self.month_combo.setToolTip("Month")
+        self.month_combo.setStyleSheet(field_style)
+
+        self.day_combo = QComboBox(self)
+        self.day_combo.addItems([f"{d:02d}" for d in range(1, 32)])
+        self.day_combo.setMaxVisibleItems(16)
+        self.day_combo.setFixedWidth(44)
+        self.day_combo.setToolTip("Day")
+        self.day_combo.setStyleSheet(field_style)
+
+        self.cal_btn = QPushButton("📅", self)
+        self.cal_btn.setFixedSize(24, 24)
+        self.cal_btn.setToolTip("Pick from calendar")
+        self.cal_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2b3342;
+                color: #e2e8f0;
+                border: 1px solid #455066;
+                border-radius: 4px;
+                font-size: 11px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                border-color: #00d2ff;
+                background-color: #323c4d;
+            }
+        """)
+
+        layout.addWidget(self.year_combo)
+        layout.addWidget(self.month_combo, stretch=1)
+        layout.addWidget(self.day_combo)
+        layout.addWidget(self.cal_btn)
+
+        self.setDate(initial_date if (initial_date and initial_date.isValid()) else QDate.currentDate())
+
+        self.year_combo.currentTextChanged.connect(self._on_year_text_changed)
+        self.month_combo.currentIndexChanged.connect(self._on_parts_changed)
+        self.day_combo.currentIndexChanged.connect(self._on_parts_changed)
+        self.cal_btn.clicked.connect(self._open_calendar_popup)
+
+    def _parsed_year(self) -> int:
+        try:
+            y = int(self.year_combo.currentText())
+            return max(1850, min(2100, y))
+        except ValueError:
+            return QDate.currentDate().year()
+
+    def _sync_day_items(self, max_d: int, selected_day: int):
+        if self.day_combo.count() != max_d:
+            self.day_combo.clear()
+            self.day_combo.addItems([f"{d:02d}" for d in range(1, max_d + 1)])
+        clamped_d = max(1, min(max_d, selected_day))
+        self.day_combo.setCurrentIndex(clamped_d - 1)
+
+    def _on_year_text_changed(self, text: str):
+        if self._updating or len(text) < 4:
+            return
+        self._on_parts_changed()
+
+    def date(self) -> QDate:
+        y = self._parsed_year()
+        m = self.month_combo.currentIndex() + 1
+        max_d = QDate(y, m, 1).daysInMonth()
+        d = min(self.day_combo.currentIndex() + 1, max_d)
+        return QDate(y, m, d)
+
+    def setDate(self, qdate: QDate):
+        if not qdate.isValid():
+            return
+        self._updating = True
+        try:
+            self.year_combo.setCurrentText(str(qdate.year()))
+            self.month_combo.setCurrentIndex(qdate.month() - 1)
+            self._sync_day_items(qdate.daysInMonth(), qdate.day())
+        finally:
+            self._updating = False
+
+    def _on_parts_changed(self):
+        if self._updating:
+            return
+        self._updating = True
+        try:
+            y = self._parsed_year()
+            m = self.month_combo.currentIndex() + 1
+            max_d = QDate(y, m, 1).daysInMonth()
+            cur_d = self.day_combo.currentIndex() + 1
+            self._sync_day_items(max_d, cur_d)
+        finally:
+            self._updating = False
+        self.dateChanged.emit(self.date())
+
+    def _open_calendar_popup(self):
+        popup = QDialog(self, Qt.WindowType.Popup)
+        popup.setStyleSheet("QDialog { background-color: #1a1e27; border: 1px solid #00d2ff; border-radius: 6px; }")
+        vlayout = QVBoxLayout(popup)
+        vlayout.setContentsMargins(6, 6, 6, 6)
+
+        cal = QCalendarWidget(popup)
+        cal.setMinimumDate(QDate(1850, 1, 1))
+        cal.setMaximumDate(QDate(2100, 12, 31))
+        cal.setSelectedDate(self.date())
+        cal.setGridVisible(True)
+
+        def on_picked(qdate: QDate):
+            self.setDate(qdate)
+            self.dateChanged.emit(qdate)
+            popup.accept()
+
+        cal.clicked.connect(on_picked)
+        vlayout.addWidget(cal)
+
+        pos = self.cal_btn.mapToGlobal(self.cal_btn.rect().bottomRight())
+        popup.adjustSize()
+        popup.move(pos.x() - popup.width(), pos.y() + 4)
+        popup.exec()
 
 
 class PhotoCardWidget(QFrame):
@@ -112,19 +309,7 @@ class PhotoCardWidget(QFrame):
         date_lbl = QLabel("Date:", self)
         date_lbl.setStyleSheet("color: #a0aec0; font-size: 11px;")
 
-        self.date_input = QDateEdit(self)
-        self.date_input.setCalendarPopup(True)
-        self.date_input.setDisplayFormat("yyyy-MM-dd")
-        self.date_input.setStyleSheet("""
-            QDateEdit {
-                background-color: #2b3342;
-                color: #ffffff;
-                border: 1px solid #455066;
-                border-radius: 4px;
-                padding: 3px 6px;
-                font-size: 11px;
-            }
-        """)
+        self.date_input = SmartDatePicker(parent=self)
 
         # Parse model date
         try:
@@ -230,8 +415,9 @@ class SidebarWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("SidebarWidget")
         self.setFixedWidth(310)
-        self.setStyleSheet("background-color: #161920; border-left: 1px solid #282f3d;")
+        self.setStyleSheet("QWidget#SidebarWidget { background-color: #161920; border-left: 1px solid #282f3d; }")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -307,28 +493,15 @@ class SidebarWidget(QWidget):
 
         # 2. Batch Date Setter Section
         batch_frame = QFrame(self)
-        batch_frame.setStyleSheet("background-color: #1e232d; border-radius: 8px; padding: 6px;")
+        batch_frame.setObjectName("BatchFrame")
+        batch_frame.setStyleSheet("QFrame#BatchFrame { background-color: #1e232d; border-radius: 8px; }")
         batch_layout = QVBoxLayout(batch_frame)
+        batch_layout.setContentsMargins(10, 10, 10, 10)
         batch_layout.setSpacing(6)
 
+        batch_hdr_row = QHBoxLayout()
         batch_title = QLabel("Batch Date Setter", batch_frame)
         batch_title.setStyleSheet("font-weight: bold; font-size: 12px; color: #e2e8f0; border: none;")
-
-        batch_input_row = QHBoxLayout()
-        self.batch_date_edit = QDateEdit(batch_frame)
-        self.batch_date_edit.setCalendarPopup(True)
-        self.batch_date_edit.setDisplayFormat("yyyy-MM-dd")
-        self.batch_date_edit.setDate(QDate.currentDate())
-        self.batch_date_edit.setStyleSheet("""
-            QDateEdit {
-                background-color: #2b3342;
-                color: #ffffff;
-                border: 1px solid #455066;
-                border-radius: 4px;
-                padding: 4px 6px;
-                font-size: 11px;
-            }
-        """)
 
         apply_all_btn = QPushButton("Apply to All", batch_frame)
         apply_all_btn.setStyleSheet("""
@@ -337,7 +510,7 @@ class SidebarWidget(QWidget):
                 color: white;
                 font-weight: bold;
                 border-radius: 4px;
-                padding: 5px 10px;
+                padding: 4px 10px;
                 font-size: 11px;
             }
             QPushButton:hover {
@@ -346,11 +519,14 @@ class SidebarWidget(QWidget):
         """)
         apply_all_btn.clicked.connect(self._on_apply_batch_date)
 
-        batch_input_row.addWidget(self.batch_date_edit, stretch=1)
-        batch_input_row.addWidget(apply_all_btn)
+        batch_hdr_row.addWidget(batch_title)
+        batch_hdr_row.addStretch()
+        batch_hdr_row.addWidget(apply_all_btn)
 
-        batch_layout.addWidget(batch_title)
-        batch_layout.addLayout(batch_input_row)
+        self.batch_date_edit = SmartDatePicker(QDate.currentDate(), batch_frame)
+
+        batch_layout.addLayout(batch_hdr_row)
+        batch_layout.addWidget(self.batch_date_edit)
         layout.addWidget(batch_frame)
 
         # 3. Photo Cards Scroll Area Header
