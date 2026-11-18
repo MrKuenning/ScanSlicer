@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.2] - 2026-11-18
+
+### Added
+- **Versioned Windows EXE Builds (`releases/Compile EXE.bat`)**:
+  - Reads `__version__` from `app/__init__.py`, outputs `releases\ScanSlicer v<version>.exe`, embeds Windows PE version metadata (`FileVersion`, `ProductVersion`, `ProductName`), and preserves prior versioned builds.
+- **Resizable Sidebar & Responsive Previews (`app/main_window.py`, `app/sidebar.py`)**:
+  - Added a `QSplitter` between the canvas and right **Detected Photos** sidebar (width persisted via `QSettings`), dynamically rescaling card thumbnail previews (`134–360 px` tall) as the sidebar widens.
+
+### Improved
+- **Toolbar Visual Polish (`app/main_window.py`, `app/styles.py`)**:
+  - Styled **🗑 Delete** and **➖ Remove Box** in red, **➕ Add Box** in green, and simplified rotate buttons to `↺` and `↻`.
+- **Edge-Touching & Album-Page Photo Splitting (`app/detector.py`)**:
+  - Added `_split_by_background_gutters` to separate stacked photos bridged along an outer scan edge.
+  - Added `_split_mounting_page` to re-segment large album-page candidates using opened LAB distance (without Canny handwriting/tape bridges) and filter hollow page-border artifacts.
+
+---
+
+## [1.6.0] - 2026-11-18
+
+### Added
+- **Common Aspect Ratio Lock (`app/main_window.py`, `app/canvas_view.py`, `app/crop_item.py`)**:
+  - Added a toolbar **Ratio** selector (`Free`, `4:3`, `3:4`, `3:2`, `2:3`, `5:7`, `7:5`, `1:1`, `16:9`, `9:16`) that snaps the selected box and constrains corner/edge resizing and manual **➕ Add Box** drawing.
+- **Keep Inside Image Bounds (`app/main_window.py`, `app/canvas_view.py`, `app/crop_item.py`)**:
+  - Added **🖼 Keep Inside** toggle (enabled by default, persisted via `QSettings`) to keep resizing, dragging, rotation, nudging, and box creation inside the scanned image bounds, with one-click override.
+- **Close Image Action (`app/main_window.py`)**:
+  - Added **✖ Close** (`Ctrl+W`) to close the active scan and return to the drop screen without deleting the file.
+
+### Improved
+- **Reorganized Toolbar & Dropdown Styling (`app/main_window.py`, `app/styles.py`)**:
+  - Grouped actions logically into Image/View (`Open`, `Close`, `Delete`, `Fit`), Selection (`Add Box`, `Remove Box`, `-90°`, `+90°`), Constraints (`Ratio`, `Lock 90°`, `Square Up`, `Keep Inside`, `Reset`), and right-aligned `Loupe` zoom dropdown.
+  - Styled toolbar `QComboBox` dropdowns with transparent drop-down buttons and `assets/chevron_down.svg` arrows to eliminate square corner artifacts.
+- **Larger Sidebar Previews (`app/sidebar.py`)**:
+  - Removed the per-card rotate/square buttons and the sidebar `Square All` button, expanding thumbnail previews to `244×134` across the full card width.
+- **Slight-Tilt Detection (`app/detector.py`)**:
+  - Lowered `snap_rect_angle` threshold from `3.0°` to `0.5°` so slightly crooked scans (`0.5°–3°`) keep their detected angle and deskew properly.
+
+### Fixed
+- **Re-Detect Photos Crash (`app/canvas_view.py`, `app/sidebar.py`, `app/main_window.py`, `app/main.py`)**:
+  - Disabled `QGraphicsScene` BSP indexing (`NoIndex`) for zoom-scaled `CropBoxItem` bounds, hardened crop item and sidebar card teardown, copied contiguous thumbnail buffers, and enabled `faulthandler` diagnostics.
+
+---
+
 ## [1.5.0] - 2026-11-18
 
 ### Added

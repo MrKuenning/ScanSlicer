@@ -269,40 +269,14 @@ class PhotoCardWidget(QFrame):
         hdr_layout.addWidget(del_btn)
         main_layout.addLayout(hdr_layout)
 
-        # Body row: Thumbnail preview + Rotation buttons
-        body_layout = QHBoxLayout()
+        # Body: Large responsive thumbnail preview
+        self._full_thumb_pixmap: Optional[QPixmap] = None
         self.thumb_label = QLabel(self)
-        self.thumb_label.setFixedSize(90, 70)
+        self.thumb_label.setFixedHeight(140)
         self.thumb_label.setStyleSheet("background-color: #12151c; border-radius: 6px; border: 1px solid #363e4f;")
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.update_thumbnail()
-
-        # Rotation buttons (+90 / -90)
-        rot_layout = QVBoxLayout()
-        rot_layout.setSpacing(4)
-        rot_ccw_btn = QPushButton("↺ 90°", self)
-        rot_ccw_btn.setToolTip("Rotate 90° Counter-Clockwise")
-        rot_ccw_btn.setStyleSheet("font-size: 11px; padding: 4px 8px; background-color: #2b3342; border-radius: 4px; color: #e0e6ed;")
-        rot_ccw_btn.clicked.connect(lambda: self.rotate_requested.emit(self.model.id, 270))
-
-        rot_cw_btn = QPushButton("↻ 90°", self)
-        rot_cw_btn.setToolTip("Rotate 90° Clockwise")
-        rot_cw_btn.setStyleSheet("font-size: 11px; padding: 4px 8px; background-color: #2b3342; border-radius: 4px; color: #e0e6ed;")
-        rot_cw_btn.clicked.connect(lambda: self.rotate_requested.emit(self.model.id, 90))
-
-        square_btn = QPushButton("⏹ Square", self)
-        square_btn.setToolTip("Snap corners into an exact 90° right-angled rectangle")
-        square_btn.setStyleSheet("font-size: 11px; padding: 4px 8px; background-color: #243547; border: 1px solid #00a2cc; border-radius: 4px; color: #00d2ff;")
-        square_btn.clicked.connect(lambda: self.straighten_requested.emit(self.model.id))
-
-        rot_layout.addWidget(rot_ccw_btn)
-        rot_layout.addWidget(rot_cw_btn)
-        rot_layout.addWidget(square_btn)
-
-        body_layout.addWidget(self.thumb_label)
-        body_layout.addLayout(rot_layout)
-        body_layout.addStretch()
-        main_layout.addLayout(body_layout)
+        main_layout.addWidget(self.thumb_label)
 
         # Date input row
         date_layout = QHBoxLayout()
@@ -338,17 +312,33 @@ class PhotoCardWidget(QFrame):
             )
             if cropped is not None and cropped.size > 0:
                 h, w = cropped.shape[:2]
-                rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+                if h <= 0 or w <= 0:
+                    return
+                rgb = np.ascontiguousarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
                 bytes_per_line = 3 * w
-                q_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-                pix = QPixmap.fromImage(q_img).scaled(
-                    90, 70,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-                self.thumb_label.setPixmap(pix)
+                q_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
+                self._full_thumb_pixmap = QPixmap.fromImage(q_img)
+                self._rescale_thumbnail()
         except Exception:
             pass
+
+    def _rescale_thumbnail(self):
+        """Scales the cached preview pixmap to fit the current card width."""
+        avail_w = max(200, self.thumb_label.width() - 8)
+        target_h = max(134, min(360, int(avail_w * 0.62)))
+        if self.thumb_label.height() != target_h + 6:
+            self.thumb_label.setFixedHeight(target_h + 6)
+        if self._full_thumb_pixmap is not None and not self._full_thumb_pixmap.isNull():
+            pix = self._full_thumb_pixmap.scaled(
+                avail_w, target_h,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.thumb_label.setPixmap(pix)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._rescale_thumbnail()
 
     def update_style(self, selected: bool):
         if selected:
@@ -427,7 +417,8 @@ class SidebarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SidebarWidget")
-        self.setFixedWidth(310)
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(720)
         self.setStyleSheet("QWidget#SidebarWidget { background-color: #161920; border-left: 1px solid #282f3d; }")
 
         layout = QVBoxLayout(self)
@@ -573,28 +564,9 @@ class SidebarWidget(QWidget):
         hdr_box = QHBoxLayout()
         self.count_label = QLabel("Detected Photos (0)", self)
         self.count_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #00d2ff;")
-        
-        square_all_btn = QPushButton("⏹ Square All", self)
-        square_all_btn.setToolTip("Snap all detected boxes back to exact 90° right angles")
-        square_all_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #242c38;
-                color: #00d2ff;
-                font-size: 11px;
-                border: 1px solid #364459;
-                border-radius: 4px;
-                padding: 3px 8px;
-            }
-            QPushButton:hover {
-                background-color: #00d2ff;
-                color: #0f172a;
-            }
-        """)
-        square_all_btn.clicked.connect(lambda: self.straighten_all_requested.emit())
 
         hdr_box.addWidget(self.count_label)
         hdr_box.addStretch()
-        hdr_box.addWidget(square_all_btn)
         layout.addLayout(hdr_box)
 
         self.scroll_area = QScrollArea(self)
@@ -637,9 +609,12 @@ class SidebarWidget(QWidget):
 
     def set_photos(self, models: List[PhotoModel], source_image: Optional[np.ndarray]):
         """Populates sidebar cards."""
-        # Clear existing cards
+        # Clear existing cards safely
         for card in self.cards:
+            card.blockSignals(True)
+            card.hide()
             self.cards_layout.removeWidget(card)
+            card.setParent(None)
             card.deleteLater()
         self.cards.clear()
 

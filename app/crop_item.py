@@ -72,6 +72,9 @@ class CropBoxItem(QGraphicsPolygonItem):
         self.drag_start_pos = QPointF()
         self.drag_start_corners = self.corners.copy()
         self.lock_rectangular = getattr(model, "lock_rectangular", True)
+        self.aspect_ratio: Optional[float] = None  # width / height when locked
+        self.keep_inside_image: bool = True
+        self.image_bounds: Optional[tuple[float, float]] = None
 
         self.setAcceptHoverEvents(True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
@@ -101,6 +104,105 @@ class CropBoxItem(QGraphicsPolygonItem):
         """Toggles between locked 90-degree rectangle and free quadrilateral skew."""
         self.lock_rectangular = lock
         self.model.lock_rectangular = lock
+
+    def set_aspect_ratio(self, ratio: Optional[float], snap_now: bool = False):
+        """Sets an optional width/height aspect ratio lock (None = free)."""
+        self.aspect_ratio = ratio
+        if snap_now and ratio is not None:
+            pts = straighten_quad(self.corners)
+            tl, tr, br, bl = pts
+            center = pts.mean(axis=0)
+            w_vec = tr - tl
+            h_vec = bl - tl
+            w_len = float(np.linalg.norm(w_vec))
+            h_len = float(np.linalg.norm(h_vec))
+            if w_len >= 1e-4 and h_len >= 1e-4:
+                u = w_vec / w_len
+                v = h_vec / h_len
+                # Preserve area approximately while enforcing w_len / h_len = ratio
+                area = max(w_len * h_len, 225.0)
+                new_h = max(15.0, math.sqrt(area / ratio))
+                new_w = max(15.0, new_h * ratio)
+                new_pts = np.array([
+                    center - (new_w / 2.0) * u - (new_h / 2.0) * v,
+                    center + (new_w / 2.0) * u - (new_h / 2.0) * v,
+                    center + (new_w / 2.0) * u + (new_h / 2.0) * v,
+                    center - (new_w / 2.0) * u + (new_h / 2.0) * v,
+                ], dtype=np.float32)
+                if self.keep_inside_image and self.image_bounds is not None:
+                    new_pts = self._fit_box_inside_bounds(new_pts, center, u, v, new_w, new_h)
+                self.corners = new_pts
+                self.update_geometry()
+                self.signals.changed.emit()
+
+    def _fit_box_inside_bounds(
+        self, pts: np.ndarray, center: np.ndarray, u: np.ndarray, v: np.ndarray, w_len: float, h_len: float
+    ) -> np.ndarray:
+        """Shifts and, if needed, uniformly scales a centered box to stay inside image_bounds."""
+        if not self.image_bounds:
+            return pts
+        img_w, img_h = self.image_bounds
+        pts = self._shift_inside_bounds(pts)
+        min_x, max_x = float(pts[:, 0].min()), float(pts[:, 0].max())
+        min_y, max_y = float(pts[:, 1].min()), float(pts[:, 1].max())
+        span_x = max(max_x - min_x, 1e-4)
+        span_y = max(max_y - min_y, 1e-4)
+        if span_x > img_w or span_y > img_h:
+            scale = min(img_w / span_x, img_h / span_y)
+            nw, nh = max(15.0, w_len * scale), max(15.0, h_len * scale)
+            c = pts.mean(axis=0)
+            pts = np.array([
+                c - (nw / 2.0) * u - (nh / 2.0) * v,
+                c + (nw / 2.0) * u - (nh / 2.0) * v,
+                c + (nw / 2.0) * u + (nh / 2.0) * v,
+                c - (nw / 2.0) * u + (nh / 2.0) * v,
+            ], dtype=np.float32)
+            pts = self._shift_inside_bounds(pts)
+        return pts
+
+    def _shift_inside_bounds(self, pts: np.ndarray) -> np.ndarray:
+        """Translates pts so its bounding box stays inside [0, img_w] x [0, img_h] when possible."""
+        if not self.keep_inside_image or not self.image_bounds:
+            return pts
+        img_w, img_h = self.image_bounds
+        out = pts.copy()
+        min_x, max_x = float(out[:, 0].min()), float(out[:, 0].max())
+        min_y, max_y = float(out[:, 1].min()), float(out[:, 1].max())
+        if max_x - min_x <= img_w:
+            if min_x < 0.0:
+                out[:, 0] -= min_x
+            elif max_x > img_w:
+                out[:, 0] -= (max_x - img_w)
+        if max_y - min_y <= img_h:
+            if min_y < 0.0:
+                out[:, 1] -= min_y
+            elif max_y > img_h:
+                out[:, 1] -= (max_y - img_h)
+        return out
+
+    def _clamp_point(self, pt: np.ndarray) -> np.ndarray:
+        if not self.keep_inside_image or not self.image_bounds:
+            return pt
+        img_w, img_h = self.image_bounds
+        return np.array([
+            float(np.clip(pt[0], 0.0, img_w)),
+            float(np.clip(pt[1], 0.0, img_h))
+        ], dtype=np.float32)
+
+    def _max_scale_inside_bounds(self, anchor: np.ndarray, vec: np.ndarray) -> float:
+        """Returns the maximum factor t in [0, 1] such that anchor + t * vec stays inside image_bounds."""
+        if not self.keep_inside_image or not self.image_bounds:
+            return 1.0
+        img_w, img_h = self.image_bounds
+        t_max = 1.0
+        for axis, limit in ((0, img_w), (1, img_h)):
+            v = float(vec[axis])
+            a = float(anchor[axis])
+            if v > 1e-6:
+                t_max = min(t_max, (limit - a) / v)
+            elif v < -1e-6:
+                t_max = min(t_max, -a / v)
+        return max(0.0, t_max)
 
     def straighten(self):
         """Snaps the box into an exact 90-degree rectangle aligned with its current orientation."""
@@ -387,10 +489,11 @@ class CropBoxItem(QGraphicsPolygonItem):
             if is_rect:
                 self._resize_corner_rectangular(self.active_handle, cur_pos)
             else:
-                self.corners[self.active_handle] = [
+                new_pt = np.array([
                     self.drag_start_corners[self.active_handle, 0] + dx,
                     self.drag_start_corners[self.active_handle, 1] + dy
-                ]
+                ], dtype=np.float32)
+                self.corners[self.active_handle] = self._clamp_point(new_pt)
 
             self.update_geometry()
             pt = QPointF(float(self.corners[self.active_handle, 0]), float(self.corners[self.active_handle, 1]))
@@ -400,7 +503,8 @@ class CropBoxItem(QGraphicsPolygonItem):
 
         # 2. Whole body translation
         elif self.active_handle == self.HANDLE_BODY:
-            self.corners = self.drag_start_corners + np.array([dx, dy], dtype=np.float32)
+            moved = self.drag_start_corners + np.array([dx, dy], dtype=np.float32)
+            self.corners = self._shift_inside_bounds(moved)
             self.update_geometry()
             self.signals.changed.emit()
 
@@ -418,7 +522,8 @@ class CropBoxItem(QGraphicsPolygonItem):
                 normal = np.array([0.0, -1.0], dtype=np.float32)
             else:
                 normal = np.array([edge_vec[1], -edge_vec[0]], dtype=np.float32) / edge_len
-            start_rot_pt = mid_top + normal * self.ROT_HANDLE_DIST
+            inv_scale = 1.0 / self._view_scale()
+            start_rot_pt = mid_top + normal * (self.ROT_HANDLE_DIST * inv_scale)
 
             init_vec = start_rot_pt - center
             cur_vec = np.array([cur_pos.x() - center[0], cur_pos.y() - center[1]], dtype=np.float32)
@@ -433,7 +538,16 @@ class CropBoxItem(QGraphicsPolygonItem):
             R = np.array([[cos_a, -sin_a], [sin_a, cos_a]], dtype=np.float32)
 
             rel_corners = self.drag_start_corners - center
-            self.corners = (rel_corners @ R.T) + center
+            rotated = self._shift_inside_bounds((rel_corners @ R.T) + center)
+            if self.keep_inside_image and self.image_bounds is not None:
+                img_w, img_h = self.image_bounds
+                if (
+                    rotated[:, 0].min() >= -0.5 and rotated[:, 0].max() <= img_w + 0.5
+                    and rotated[:, 1].min() >= -0.5 and rotated[:, 1].max() <= img_h + 0.5
+                ):
+                    self.corners = rotated
+            else:
+                self.corners = rotated
             self.update_geometry()
             self.signals.handle_drag.emit(self.get_rotation_handle_pos(), f"Rotating Photo #{self.model.id}")
             self.signals.changed.emit()
@@ -478,12 +592,39 @@ class CropBoxItem(QGraphicsPolygonItem):
         mouse_vec = cur_xy - anchor
 
         # Projections onto axes
-        d1 = float(np.dot(mouse_vec, u1))
-        d2 = float(np.dot(mouse_vec, u2))
+        d1 = max(15.0, float(np.dot(mouse_vec, u1)))
+        d2 = max(15.0, float(np.dot(mouse_vec, u2)))
 
-        # Enforce minimum dimension
-        d1 = max(15.0, d1)
-        d2 = max(15.0, d2)
+        # Enforce locked aspect ratio (width / height) if active
+        if self.aspect_ratio is not None:
+            r = self.aspect_ratio
+            # Determine which axis corresponds to width vs height
+            u1_is_width = abs(float(u1[0])) >= abs(float(u2[0]))
+            if u1_is_width:
+                t = max(15.0, (d1 * r + d2) / (r * r + 1.0))
+                d1, d2 = max(15.0, t * r), t
+            else:
+                t = max(15.0, (d2 * r + d1) / (r * r + 1.0))
+                d2, d1 = max(15.0, t * r), t
+
+        # Clamp inside image bounds if enabled
+        if self.keep_inside_image and self.image_bounds is not None:
+            if self.aspect_ratio is not None:
+                t_max = min(
+                    self._max_scale_inside_bounds(anchor, d1 * u1),
+                    self._max_scale_inside_bounds(anchor, d2 * u2),
+                    self._max_scale_inside_bounds(anchor, d1 * u1 + d2 * u2),
+                )
+                d1 = max(15.0, d1 * t_max)
+                d2 = max(15.0, d2 * t_max)
+            else:
+                t1 = self._max_scale_inside_bounds(anchor, d1 * u1)
+                d1 = max(15.0, d1 * t1)
+                t2 = self._max_scale_inside_bounds(anchor, d2 * u2)
+                d2 = max(15.0, d2 * t2)
+                t_diag = self._max_scale_inside_bounds(anchor + d1 * u1, d2 * u2)
+                if t_diag < 1.0:
+                    d2 = max(15.0, d2 * t_diag)
 
         new_corners = self.drag_start_corners.copy()
         new_corners[opp_idx] = anchor
@@ -497,25 +638,66 @@ class CropBoxItem(QGraphicsPolygonItem):
         """Displaces the two corners of an edge along the edge's perpendicular normal."""
         # Top: 0-1, Right: 1-2, Bottom: 2-3, Left: 3-0
         corner_pairs = [(0, 1), (1, 2), (2, 3), (3, 0)]
+        opp_pairs = [(3, 2), (0, 3), (1, 0), (2, 1)]
         c1_idx, c2_idx = corner_pairs[edge_idx]
+        o1_idx, o2_idx = opp_pairs[edge_idx]
 
         c1 = self.drag_start_corners[c1_idx]
         c2 = self.drag_start_corners[c2_idx]
+        o1 = self.drag_start_corners[o1_idx]
+        o2 = self.drag_start_corners[o2_idx]
         edge_vec = c2 - c1
-        edge_len = np.linalg.norm(edge_vec)
+        edge_len = float(np.linalg.norm(edge_vec))
         if edge_len < 1e-4:
             return
 
-        # Normal vector perpendicular to the edge
+        # Normal vector pointing away from the opposite edge
         normal = np.array([edge_vec[1], -edge_vec[0]], dtype=np.float32) / edge_len
-        if edge_idx in (1, 2):  # Orient outward
+        if float(np.dot(normal, c1 - o1)) < 0:
             normal = -normal
 
-        proj = (dx * normal[0]) + (dy * normal[1])
-        shift = normal * proj
+        cur_depth = float(np.dot(c1 - o1, normal))
+        proj = (dx * float(normal[0])) + (dy * float(normal[1]))
+        new_depth = max(15.0, cur_depth + proj)
 
-        self.corners[c1_idx] = c1 + shift
-        self.corners[c2_idx] = c2 + shift
+        if self.aspect_ratio is not None:
+            r = self.aspect_ratio
+            # Top/Bottom edges change height; Left/Right edges change width
+            if edge_idx in (0, 2):
+                new_edge_len = max(15.0, new_depth * r)
+            else:
+                new_edge_len = max(15.0, new_depth / r)
+
+            u_edge = edge_vec / edge_len
+            mid_opp = (o1 + o2) / 2.0
+            mid_edge = mid_opp + normal * new_depth
+            new_c1 = mid_edge - (new_edge_len / 2.0) * u_edge
+            new_c2 = mid_edge + (new_edge_len / 2.0) * u_edge
+            new_o1 = mid_opp - (new_edge_len / 2.0) * u_edge
+            new_o2 = mid_opp + (new_edge_len / 2.0) * u_edge
+
+            if self.keep_inside_image and self.image_bounds is not None:
+                img_w, img_h = self.image_bounds
+                candidate = np.array([new_c1, new_c2, new_o1, new_o2], dtype=np.float32)
+                if (
+                    candidate[:, 0].min() < 0.0 or candidate[:, 0].max() > img_w
+                    or candidate[:, 1].min() < 0.0 or candidate[:, 1].max() > img_h
+                ):
+                    return
+
+            self.corners[c1_idx] = new_c1
+            self.corners[c2_idx] = new_c2
+            self.corners[o1_idx] = new_o1
+            self.corners[o2_idx] = new_o2
+            return
+
+        delta_depth = new_depth - cur_depth
+        shift = normal * delta_depth
+        t1 = self._max_scale_inside_bounds(c1, shift)
+        t2 = self._max_scale_inside_bounds(c2, shift)
+        t = min(t1, t2)
+        self.corners[c1_idx] = c1 + shift * t
+        self.corners[c2_idx] = c2 + shift * t
 
     def mouseReleaseEvent(self, event):
         if self.active_handle != self.HANDLE_NONE:

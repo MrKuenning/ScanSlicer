@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import List, Optional
 import numpy as np
 
-from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtCore import Qt, QSize, QTimer, QSettings
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QToolBar,
-    QFileDialog, QMessageBox, QLabel, QPushButton, QStackedWidget
+    QFileDialog, QMessageBox, QLabel, QPushButton, QStackedWidget, QComboBox,
+    QSizePolicy, QSplitter
 )
 
 from .photo_model import PhotoModel
@@ -59,8 +60,30 @@ class MainWindow(QMainWindow):
         # Right Sidebar
         self.sidebar = SidebarWidget(self)
 
-        main_layout.addWidget(self.center_stack, stretch=1)
-        main_layout.addWidget(self.sidebar)
+        # Resizable splitter between canvas and sidebar
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal, central_widget)
+        self.main_splitter.setHandleWidth(5)
+        self.main_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #282f3d;
+            }
+            QSplitter::handle:hover {
+                background-color: #00d2ff;
+            }
+        """)
+        self.main_splitter.addWidget(self.center_stack)
+        self.main_splitter.addWidget(self.sidebar)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 0)
+        self.main_splitter.setCollapsible(0, False)
+        self.main_splitter.setCollapsible(1, False)
+
+        saved_sidebar_w = int(QSettings("ScanSlicer", "ScanSlicer").value("ui/sidebar_width", 320, type=int))
+        saved_sidebar_w = max(280, min(720, saved_sidebar_w))
+        self.main_splitter.setSizes([max(400, self.width() - saved_sidebar_w), saved_sidebar_w])
+        self.main_splitter.splitterMoved.connect(self._on_splitter_moved)
+
+        main_layout.addWidget(self.main_splitter)
 
         # Setup Toolbar & Status Bar
         self._create_toolbar()
@@ -126,6 +149,11 @@ class MainWindow(QMainWindow):
 
         return prompt
 
+    def _on_splitter_moved(self, pos: int, index: int):
+        sizes = self.main_splitter.sizes()
+        if len(sizes) >= 2:
+            QSettings("ScanSlicer", "ScanSlicer").setValue("ui/sidebar_width", sizes[1])
+
     def _on_prompt_drop(self, event):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
@@ -138,95 +166,176 @@ class MainWindow(QMainWindow):
     def _create_toolbar(self):
         toolbar = QToolBar("Main Toolbar", self)
         toolbar.setMovable(False)
-        toolbar.setIconSize(QSize(20, 20))
+        toolbar.setIconSize(QSize(18, 18))
         self.addToolBar(toolbar)
 
-        # Open File Action
-        self.open_action = QAction("📁 Open Image", self)
+        chevron_path = get_asset_path("chevron_down.svg")
+        arrow_rule = (
+            f"image: url({chevron_path.as_posix()}); width: 10px; height: 6px;"
+            if chevron_path.exists()
+            else ""
+        )
+
+        combo_style = f"""
+            QComboBox {{
+                background-color: #242a36;
+                color: #f1f5f9;
+                border: 1px solid #363e4f;
+                border-radius: 6px;
+                padding: 5px 22px 5px 10px;
+                font-weight: 600;
+                font-size: 12px;
+            }}
+            QComboBox:hover, QComboBox:on {{
+                border-color: #00d2ff;
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                border: none;
+                background: transparent;
+                width: 18px;
+            }}
+            QComboBox::down-arrow {{
+                {arrow_rule}
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: #1e2430;
+                color: #f1f5f9;
+                border: 1px solid #363e4f;
+                selection-background-color: #0088cc;
+                outline: 0;
+            }}
+        """
+
+        # --- Group 1: Image File & View ---
+        self.open_action = QAction("📁 Open", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
+        self.open_action.setToolTip("Open a scanned image file (Ctrl+O)")
         self.open_action.triggered.connect(self.open_file_dialog)
         toolbar.addAction(self.open_action)
 
-        # Delete Scanned Image Action
-        self.delete_scan_action = QAction("🗑 Delete Scan", self)
-        self.delete_scan_action.setToolTip("Delete the currently loaded scanned image file from disk")
+        self.close_action = QAction("✖ Close", self)
+        self.close_action.setShortcut(QKeySequence("Ctrl+W"))
+        self.close_action.setToolTip("Close the current image without deleting it (Ctrl+W)")
+        self.close_action.setEnabled(False)
+        self.close_action.triggered.connect(self.close_current_scan)
+        toolbar.addAction(self.close_action)
+
+        self.delete_scan_action = QAction("🗑 Delete", self)
+        self.delete_scan_action.setToolTip("Permanently delete the current scanned image file from disk")
         self.delete_scan_action.setEnabled(False)
         self.delete_scan_action.triggered.connect(self.delete_current_scan)
         toolbar.addAction(self.delete_scan_action)
+        toolbar.widgetForAction(self.delete_scan_action).setObjectName("DangerBtn")
+
+        self.fit_view_action = QAction("🔍 Fit", self)
+        self.fit_view_action.setShortcut(QKeySequence("Ctrl+0"))
+        self.fit_view_action.setToolTip("Fit the scanned image into the view (Ctrl+0)")
+        self.fit_view_action.setEnabled(False)
+        self.fit_view_action.triggered.connect(self.canvas_view.fit_in_view)
+        toolbar.addAction(self.fit_view_action)
 
         toolbar.addSeparator()
 
-        # Add Crop Box Tool
+        # --- Group 2: Selection / Crop Boxes ---
         self.add_box_action = QAction("➕ Add Box", self)
         self.add_box_action.setCheckable(True)
-        self.add_box_action.setToolTip("Click and drag on the image to create a new crop box manually")
+        self.add_box_action.setEnabled(False)
+        self.add_box_action.setToolTip("Click and drag on the image to draw a new crop box")
         self.add_box_action.triggered.connect(self._toggle_add_box)
         toolbar.addAction(self.add_box_action)
+        toolbar.widgetForAction(self.add_box_action).setObjectName("SuccessBtn")
 
-        # Remove Selected Crop Box
-        self.del_box_action = QAction("➖ Remove Selected Box", self)
+        self.del_box_action = QAction("➖ Remove Box", self)
         self.del_box_action.setShortcut(QKeySequence.StandardKey.Delete)
+        self.del_box_action.setEnabled(False)
         self.del_box_action.setToolTip("Remove the currently selected crop box (Del)")
         self.del_box_action.triggered.connect(self.canvas_view.delete_selected_crop)
         toolbar.addAction(self.del_box_action)
+        toolbar.widgetForAction(self.del_box_action).setObjectName("DangerBtn")
 
-        toolbar.addSeparator()
-
-        # Orientation Rotations
-        self.rot_ccw_action = QAction("↺ Rotate -90°", self)
-        self.rot_ccw_action.setToolTip("Rotate selected photo counter-clockwise")
+        self.rot_ccw_action = QAction("↺", self)
+        self.rot_ccw_action.setEnabled(False)
+        self.rot_ccw_action.setToolTip("Rotate selected photo 90° counter-clockwise")
         self.rot_ccw_action.triggered.connect(lambda: self._rotate_selected(270))
         toolbar.addAction(self.rot_ccw_action)
 
-        self.rot_cw_action = QAction("↻ Rotate +90°", self)
-        self.rot_cw_action.setToolTip("Rotate selected photo clockwise")
+        self.rot_cw_action = QAction("↻", self)
+        self.rot_cw_action.setEnabled(False)
+        self.rot_cw_action.setToolTip("Rotate selected photo 90° clockwise")
         self.rot_cw_action.triggered.connect(lambda: self._rotate_selected(90))
         toolbar.addAction(self.rot_cw_action)
 
         toolbar.addSeparator()
 
-        # Mode Toggle: Rectangular (Square) vs Free Skew
-        self.rect_lock_action = QAction("📐 Lock Rectangular", self)
+        # --- Group 3: Box Geometry & Constraints ---
+        self.aspect_ratio_combo = QComboBox(self)
+        self.aspect_ratio_combo.setToolTip("Lock crop resizing to a common aspect ratio (or Free)")
+        self._aspect_ratios = [
+            ("Ratio: Free", None),
+            ("Ratio: 4:3", 4.0 / 3.0),
+            ("Ratio: 3:4", 3.0 / 4.0),
+            ("Ratio: 3:2", 3.0 / 2.0),
+            ("Ratio: 2:3", 2.0 / 3.0),
+            ("Ratio: 5:7", 5.0 / 7.0),
+            ("Ratio: 7:5", 7.0 / 5.0),
+            ("Ratio: 1:1", 1.0),
+            ("Ratio: 16:9", 16.0 / 9.0),
+            ("Ratio: 9:16", 9.0 / 16.0),
+        ]
+        for label, _ in self._aspect_ratios:
+            self.aspect_ratio_combo.addItem(label)
+        self.aspect_ratio_combo.setStyleSheet(combo_style)
+        self.aspect_ratio_combo.currentIndexChanged.connect(self._on_aspect_ratio_changed)
+        toolbar.addWidget(self.aspect_ratio_combo)
+
+        self.rect_lock_action = QAction("📐 Lock 90°", self)
         self.rect_lock_action.setCheckable(True)
         self.rect_lock_action.setChecked(True)
-        self.rect_lock_action.setToolTip("Lock 90° right angles when resizing corners. Click to toggle Free Skew (or hold Shift while dragging).")
+        self.rect_lock_action.setToolTip("Lock 90° right angles when resizing corners (hold Shift to temporarily toggle Free Skew)")
         self.rect_lock_action.triggered.connect(self._toggle_rect_lock)
         toolbar.addAction(self.rect_lock_action)
 
-        # Straighten / Square Box Action
-        self.square_action = QAction("⏹ Square Box", self)
-        self.square_action.setToolTip("Snap the selected crop box into an exact 90° rectangle (aligned with its angle)")
+        self.square_action = QAction("⏹ Square Up", self)
+        self.square_action.setEnabled(False)
+        self.square_action.setToolTip("Snap the selected crop box into an exact 90° rectangle")
         self.square_action.triggered.connect(self.canvas_view.straighten_selected_crop)
         toolbar.addAction(self.square_action)
 
-        toolbar.addSeparator()
+        keep_inside_default = QSettings("ScanSlicer", "ScanSlicer").value("canvas/keep_inside_image", True, type=bool)
+        self.keep_inside_action = QAction("🖼 Keep Inside", self)
+        self.keep_inside_action.setCheckable(True)
+        self.keep_inside_action.setChecked(keep_inside_default)
+        self.keep_inside_action.setToolTip(
+            "Keep crop boxes inside the scanned image bounds. Uncheck to override and crop outside the image."
+        )
+        self.keep_inside_action.triggered.connect(self._toggle_keep_inside)
+        toolbar.addAction(self.keep_inside_action)
+        self.canvas_view.set_keep_inside_image(keep_inside_default)
 
-        # Fit to Window View
-        self.fit_view_action = QAction("🔍 Fit in View", self)
-        self.fit_view_action.setShortcut(QKeySequence("Ctrl+0"))
-        self.fit_view_action.triggered.connect(self.canvas_view.fit_in_view)
-        toolbar.addAction(self.fit_view_action)
-
-        # Reset Boxes Action
-        self.reset_action = QAction("🔄 Reset Crops", self)
-        self.reset_action.setToolTip("Restore initial auto-detected crop boxes")
+        self.reset_action = QAction("🔄 Reset", self)
+        self.reset_action.setEnabled(False)
+        self.reset_action.setToolTip("Discard manual box edits and restore the original auto-detected boxes")
         self.reset_action.triggered.connect(self._reset_to_auto_crops)
         toolbar.addAction(self.reset_action)
 
         toolbar.addSeparator()
 
-        # Loupe Zoom controls
-        zoom_4x = QAction("Loupe 4x", self)
-        zoom_4x.triggered.connect(lambda: self.canvas_view.loupe.set_zoom(4.0))
-        toolbar.addAction(zoom_4x)
+        spacer = QWidget(toolbar)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
 
-        zoom_6x = QAction("Loupe 6x", self)
-        zoom_6x.triggered.connect(lambda: self.canvas_view.loupe.set_zoom(6.0))
-        toolbar.addAction(zoom_6x)
-
-        zoom_8x = QAction("Loupe 8x", self)
-        zoom_8x.triggered.connect(lambda: self.canvas_view.loupe.set_zoom(8.0))
-        toolbar.addAction(zoom_8x)
+        # --- Group 4: Loupe Zoom ---
+        self.loupe_zoom_combo = QComboBox(self)
+        self.loupe_zoom_combo.setToolTip("Magnifying loupe zoom level")
+        for z_label in ("Loupe: 4x", "Loupe: 6x", "Loupe: 8x"):
+            self.loupe_zoom_combo.addItem(z_label)
+        self.loupe_zoom_combo.setStyleSheet(combo_style)
+        self.loupe_zoom_combo.currentIndexChanged.connect(
+            lambda idx: self.canvas_view.loupe.set_zoom((4.0, 6.0, 8.0)[idx])
+        )
+        toolbar.addWidget(self.loupe_zoom_combo)
 
     def _connect_signals(self):
         # Canvas Signals
@@ -265,7 +374,11 @@ class MainWindow(QMainWindow):
             return
 
         self.current_file_path = file_path
+        self.close_action.setEnabled(True)
         self.delete_scan_action.setEnabled(True)
+        self.fit_view_action.setEnabled(True)
+        self.add_box_action.setEnabled(True)
+        self.reset_action.setEnabled(True)
         self.center_stack.setCurrentWidget(self.canvas_view)
 
         # Run auto detection with current sensitivity
@@ -279,38 +392,43 @@ class MainWindow(QMainWindow):
         if self.canvas_view.source_image is None:
             return
 
-        self.status_bar.showMessage("Analyzing scanner bed for photos...")
-        crops = detect_scanner_photos(
-            self.canvas_view.source_image,
-            sensitivity=sensitivity,
-            edge_inset=self.sidebar.edge_trim_slider.value()
-        )
+        try:
+            self.status_bar.showMessage("Analyzing scanner bed for photos...")
+            crops = detect_scanner_photos(
+                self.canvas_view.source_image,
+                sensitivity=sensitivity,
+                edge_inset=self.sidebar.edge_trim_slider.value()
+            )
 
-        # Convert to PhotoModel
-        models: List[PhotoModel] = []
-        batch_date = self.sidebar.batch_date_edit.date().toString("yyyy-MM-dd")
-        for c in crops:
-            models.append(PhotoModel(
-                id=c.id,
-                corners=c.corners,
-                angle=c.angle,
-                date_str=batch_date
-            ))
+            # Convert to PhotoModel
+            models: List[PhotoModel] = []
+            batch_date = self.sidebar.batch_date_edit.date().toString("yyyy-MM-dd")
+            for c in crops:
+                models.append(PhotoModel(
+                    id=c.id,
+                    corners=c.corners,
+                    angle=c.angle,
+                    date_str=batch_date
+                ))
 
-        self.auto_detected_models = [
-            PhotoModel(id=m.id, corners=m.corners.copy(), angle=m.angle, date_str=m.date_str)
-            for m in models
-        ]
+            self.auto_detected_models = [
+                PhotoModel(id=m.id, corners=m.corners.copy(), angle=m.angle, date_str=m.date_str)
+                for m in models
+            ]
 
-        # Populate canvas and sidebar
-        self.canvas_view.set_crops(models)
-        self.sidebar.set_photos(models, self.canvas_view.source_image)
+            # Populate canvas and sidebar
+            self.canvas_view.set_crops(models)
+            self.sidebar.set_photos(models, self.canvas_view.source_image)
 
-        file_name = Path(self.current_file_path).name if self.current_file_path else "Image"
-        h, w = self.canvas_view.source_image.shape[:2]
-        self.status_bar.showMessage(
-            f"{file_name} ({w}x{h} px) - Detected {len(models)} photo(s)."
-        )
+            file_name = Path(self.current_file_path).name if self.current_file_path else "Image"
+            h, w = self.canvas_view.source_image.shape[:2]
+            self.status_bar.showMessage(
+                f"{file_name} ({w}x{h} px) - Detected {len(models)} photo(s)."
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.status_bar.showMessage(f"Detection error: {e}")
 
     def _reset_to_auto_crops(self):
         if not self.auto_detected_models:
@@ -353,11 +471,27 @@ class MainWindow(QMainWindow):
     def _toggle_rect_lock(self, checked: bool):
         self.canvas_view.set_lock_rectangular(checked)
         if checked:
-            self.rect_lock_action.setText("📐 Lock Rectangular")
+            self.rect_lock_action.setText("📐 Lock 90°")
             self.status_bar.showMessage("Rectangular/Square Mode ON: Corners stay strictly 90° (Hold Shift while dragging for free skew).")
         else:
-            self.rect_lock_action.setText("🔓 Free Skew (Unwarp)")
+            self.rect_lock_action.setText("🔓 Free Skew")
             self.status_bar.showMessage("Free Skew Mode ON: Drag corners freely to unwarp skewed/keystoned scans (Hold Shift to lock 90°).")
+
+    def _on_aspect_ratio_changed(self, idx: int):
+        label, ratio = self._aspect_ratios[idx]
+        self.canvas_view.set_aspect_ratio(ratio)
+        if ratio is None:
+            self.status_bar.showMessage("Aspect ratio lock cleared (Free).")
+        else:
+            self.status_bar.showMessage(f"Aspect ratio locked to {label.replace('Ratio: ', '')}.")
+
+    def _toggle_keep_inside(self, checked: bool):
+        QSettings("ScanSlicer", "ScanSlicer").setValue("canvas/keep_inside_image", checked)
+        self.canvas_view.set_keep_inside_image(checked)
+        if checked:
+            self.status_bar.showMessage("Lock Inside Image ON: Crop boxes stay within scan edges.")
+        else:
+            self.status_bar.showMessage("Lock Inside Image OFF: Crop boxes can extend outside scan edges.")
 
     def _on_canvas_selection_changed(self, item):
         if item:
@@ -412,6 +546,26 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self.status_bar.showMessage(f"Exported {len(models)} photo(s) to {dlg.folder_input.text().strip()}")
 
+    def _reset_workspace(self):
+        """Clears the active scan and resets image/crop toolbar state."""
+        self.canvas_view.clear_image()
+        self.current_file_path = None
+        self.auto_detected_models.clear()
+        self.sidebar.set_photos([], None)
+        self.close_action.setEnabled(False)
+        self.delete_scan_action.setEnabled(False)
+        self.fit_view_action.setEnabled(False)
+        self.add_box_action.setEnabled(False)
+        self.reset_action.setEnabled(False)
+        self.center_stack.setCurrentWidget(self.drop_prompt)
+
+    def close_current_scan(self):
+        """Closes the currently loaded scan without deleting the file."""
+        if not self.current_file_path and self.canvas_view.source_image is None:
+            return
+        self._reset_workspace()
+        self.status_bar.showMessage("Closed image.")
+
     def delete_current_scan(self):
         """Deletes the currently loaded scanned image from disk after confirmation."""
         if not self.current_file_path:
@@ -435,11 +589,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Delete Failed", f"Could not delete file:\n{e}")
             return
 
-        self.canvas_view.clear_image()
-        self.current_file_path = None
-        self.auto_detected_models.clear()
-        self.sidebar.set_photos([], None)
-        self.delete_scan_action.setEnabled(False)
-        self.center_stack.setCurrentWidget(self.drop_prompt)
+        self._reset_workspace()
         self.status_bar.showMessage(f"Deleted {scan_path.name}.")
 

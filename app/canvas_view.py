@@ -37,6 +37,7 @@ class CanvasView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.scene = QGraphicsScene(self)
+        self.scene.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.NoIndex)
         self.setScene(self.scene)
 
         self.pixmap_item: Optional[QGraphicsPixmapItem] = None
@@ -49,6 +50,8 @@ class CanvasView(QGraphicsView):
         self.pan_start_pos = QPointF()
         self.add_box_mode = False
         self.lock_rectangular = True
+        self.aspect_ratio: Optional[float] = None
+        self.keep_inside_image = True
         self.add_box_start = QPointF()
         self.temp_draw_rect: Optional[QGraphicsRectItem] = None
 
@@ -142,20 +145,34 @@ class CanvasView(QGraphicsView):
             self.fitInView(self.pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
             self._refresh_crop_handle_scales()
 
+    def _image_bounds(self) -> Optional[tuple[float, float]]:
+        if self.pixmap_item is None:
+            return None
+        r = self.pixmap_item.boundingRect()
+        return (float(r.width()), float(r.height()))
+
+    def _configure_crop_item(self, item: CropBoxItem):
+        item.image_bounds = self._image_bounds()
+        item.keep_inside_image = self.keep_inside_image
+        item.aspect_ratio = self.aspect_ratio
+        item.set_lock_rectangular(self.lock_rectangular)
+        item.signals.changed.connect(self._on_crop_changed)
+        item.signals.selected.connect(self._on_crop_selected)
+        item.signals.handle_hover.connect(self._on_handle_hover)
+        item.signals.handle_drag.connect(self._on_handle_hover)
+
     def set_crops(self, models: List[PhotoModel]):
         """Populates the canvas with interactive crop boxes from PhotoModel items."""
-        # Remove existing crop items
+        # Clear selection and detach existing crop items safely
+        self.scene.clearSelection()
         for item in self.crop_items:
+            item.signals.blockSignals(True)
             self.scene.removeItem(item)
         self.crop_items.clear()
 
         for model in models:
             item = CropBoxItem(model)
-            item.set_lock_rectangular(self.lock_rectangular)
-            item.signals.changed.connect(self._on_crop_changed)
-            item.signals.selected.connect(self._on_crop_selected)
-            item.signals.handle_hover.connect(self._on_handle_hover)
-            item.signals.handle_drag.connect(self._on_handle_hover)
+            self._configure_crop_item(item)
             self.scene.addItem(item)
             self.crop_items.append(item)
 
@@ -168,11 +185,7 @@ class CanvasView(QGraphicsView):
         next_id = len(self.crop_items) + 1
         model = PhotoModel(id=next_id, corners=corners, date_str=date_str, lock_rectangular=self.lock_rectangular)
         item = CropBoxItem(model)
-        item.set_lock_rectangular(self.lock_rectangular)
-        item.signals.changed.connect(self._on_crop_changed)
-        item.signals.selected.connect(self._on_crop_selected)
-        item.signals.handle_hover.connect(self._on_handle_hover)
-        item.signals.handle_drag.connect(self._on_handle_hover)
+        self._configure_crop_item(item)
         self.scene.addItem(item)
         self.crop_items.append(item)
 
@@ -231,6 +244,21 @@ class CanvasView(QGraphicsView):
         for item in self.crop_items:
             item.set_lock_rectangular(lock)
 
+    def set_aspect_ratio(self, ratio: Optional[float]):
+        """Locks or unlocks the aspect ratio (width/height) on all crop boxes."""
+        self.aspect_ratio = ratio
+        selected = self.get_selected_crop()
+        for item in self.crop_items:
+            item.set_aspect_ratio(ratio, snap_now=(item is selected))
+        if selected and ratio is not None:
+            self.crops_updated.emit()
+
+    def set_keep_inside_image(self, enabled: bool):
+        """Sets whether crop boxes are constrained inside the scanned image bounds."""
+        self.keep_inside_image = enabled
+        for item in self.crop_items:
+            item.keep_inside_image = enabled
+
     def straighten_selected_crop(self):
         """Snaps the currently selected box into an exact 90-degree rectangle."""
         sel = self.get_selected_crop()
@@ -278,7 +306,7 @@ class CanvasView(QGraphicsView):
 
         # Manual box creation mode
         if self.add_box_mode and event.button() == Qt.MouseButton.LeftButton:
-            scene_pos = self.mapToScene(event.pos())
+            scene_pos = self._clamp_scene_point(self.mapToScene(event.pos()))
             self.add_box_start = scene_pos
             self.temp_draw_rect = self.scene.addRect(
                 QRectF(scene_pos, scene_pos),
@@ -290,6 +318,13 @@ class CanvasView(QGraphicsView):
 
         super().mousePressEvent(event)
 
+    def _clamp_scene_point(self, pt: QPointF) -> QPointF:
+        bounds = self._image_bounds()
+        if not self.keep_inside_image or not bounds:
+            return pt
+        img_w, img_h = bounds
+        return QPointF(max(0.0, min(img_w, pt.x())), max(0.0, min(img_h, pt.y())))
+
     def mouseMoveEvent(self, event: QMouseEvent):
         if self.is_panning:
             delta = event.pos() - self.pan_start_pos
@@ -300,7 +335,32 @@ class CanvasView(QGraphicsView):
             return
 
         if self.add_box_mode and self.temp_draw_rect:
-            cur_scene_pos = self.mapToScene(event.pos())
+            cur_scene_pos = self._clamp_scene_point(self.mapToScene(event.pos()))
+            if self.aspect_ratio is not None:
+                dx = cur_scene_pos.x() - self.add_box_start.x()
+                dy = cur_scene_pos.y() - self.add_box_start.y()
+                sx = 1.0 if dx >= 0 else -1.0
+                sy = 1.0 if dy >= 0 else -1.0
+                w = abs(dx)
+                h = w / self.aspect_ratio if self.aspect_ratio > 0 else abs(dy)
+                if abs(dy) > h:
+                    h = abs(dy)
+                    w = h * self.aspect_ratio
+                end_pt = self._clamp_scene_point(QPointF(
+                    self.add_box_start.x() + sx * w,
+                    self.add_box_start.y() + sy * h
+                ))
+                # Re-apply ratio within clamped bounds
+                aw = abs(end_pt.x() - self.add_box_start.x())
+                ah = abs(end_pt.y() - self.add_box_start.y())
+                if ah > 0 and aw / ah > self.aspect_ratio:
+                    aw = ah * self.aspect_ratio
+                else:
+                    ah = aw / self.aspect_ratio if self.aspect_ratio > 0 else ah
+                cur_scene_pos = QPointF(
+                    self.add_box_start.x() + sx * aw,
+                    self.add_box_start.y() + sy * ah
+                )
             rect = QRectF(self.add_box_start, cur_scene_pos).normalized()
             self.temp_draw_rect.setRect(rect)
             event.accept()
@@ -355,13 +415,13 @@ class CanvasView(QGraphicsView):
             if sel:
                 step = 10.0 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1.0
                 if key == Qt.Key.Key_Left:
-                    sel.corners[:, 0] -= step
+                    sel.corners = sel._shift_inside_bounds(sel.corners - np.array([step, 0.0], dtype=np.float32))
                 elif key == Qt.Key.Key_Right:
-                    sel.corners[:, 0] += step
+                    sel.corners = sel._shift_inside_bounds(sel.corners + np.array([step, 0.0], dtype=np.float32))
                 elif key == Qt.Key.Key_Up:
-                    sel.corners[:, 1] -= step
+                    sel.corners = sel._shift_inside_bounds(sel.corners - np.array([0.0, step], dtype=np.float32))
                 elif key == Qt.Key.Key_Down:
-                    sel.corners[:, 1] += step
+                    sel.corners = sel._shift_inside_bounds(sel.corners + np.array([0.0, step], dtype=np.float32))
                 else:
                     super().keyPressEvent(event)
                     return

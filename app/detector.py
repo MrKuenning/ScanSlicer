@@ -41,7 +41,7 @@ def order_corners(pts: np.ndarray) -> np.ndarray:
     return rect
 
 
-def snap_rect_angle(rect: Tuple[Tuple[float, float], Tuple[float, float], float], snap_threshold: float = 3.0):
+def snap_rect_angle(rect: Tuple[Tuple[float, float], Tuple[float, float], float], snap_threshold: float = 0.5):
     """
     Normalizes a cv2.minAreaRect and snaps near-upright angles within snap_threshold
     to an exact 0.0 degree rectangular orientation.
@@ -124,7 +124,7 @@ def _contours_to_candidates(contours, min_area: float, max_area: float):
             continue
 
         rect = cv2.minAreaRect(c)
-        snapped_rect = snap_rect_angle(rect, snap_threshold=3.0)
+        snapped_rect = snap_rect_angle(rect, snap_threshold=0.5)
         (cx, cy), (rw, rh), angle = snapped_rect
         box_area = float(rw * rh)
 
@@ -144,8 +144,122 @@ def _contours_to_candidates(contours, min_area: float, max_area: float):
         candidates.append({
             "area": box_area,
             "rect": snapped_rect,
+            "contour": c,
         })
     return candidates, oversized
+
+
+def _split_by_background_gutters(
+    cand: dict,
+    closed_mask: np.ndarray,
+    mask_diff: np.ndarray,
+    min_area: float,
+    max_area: float,
+    depth: int = 0
+) -> List[dict]:
+    """
+    Splits a candidate whose bounding box contains a full-span background gutter
+    (e.g. multiple photos touching along one outer edge with a gap between them).
+    """
+    if depth > 3:
+        return [cand]
+
+    c = cand["contour"]
+    bx, by, bw, bh = cv2.boundingRect(c)
+    if bw < 60 or bh < 60:
+        return [cand]
+
+    sub_diff = mask_diff[by:by + bh, bx:bx + bw]
+    sub_closed = closed_mask[by:by + bh, bx:bx + bw].copy()
+
+    # Find rows/cols where >= 85% of pixels are background (mask_diff == 0)
+    row_bg = (sub_diff == 0).mean(axis=1)
+    col_bg = (sub_diff == 0).mean(axis=0)
+
+    y_lo, y_hi = max(4, int(bh * 0.12)), min(bh - 4, int(bh * 0.88))
+    x_lo, x_hi = max(4, int(bw * 0.12)), min(bw - 4, int(bw * 0.88))
+
+    best_y = int(np.argmax(row_bg[y_lo:y_hi]) + y_lo) if y_hi > y_lo else -1
+    best_x = int(np.argmax(col_bg[x_lo:x_hi]) + x_lo) if x_hi > x_lo else -1
+
+    best_y_val = float(row_bg[best_y]) if best_y >= 0 else 0.0
+    best_x_val = float(col_bg[best_x]) if best_x >= 0 else 0.0
+
+    if max(best_y_val, best_x_val) < 0.85:
+        return [cand]
+
+    if best_y_val >= best_x_val:
+        # Clear a 3px band around the strongest horizontal gutter
+        sub_closed[max(0, best_y - 1):min(bh, best_y + 2), :] = 0
+    else:
+        sub_closed[:, max(0, best_x - 1):min(bw, best_x + 2)] = 0
+
+    sub_contours, _ = cv2.findContours(sub_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    shifted = [sc + np.array([[[bx, by]]], dtype=sc.dtype) for sc in sub_contours]
+    split_cands, _ = _contours_to_candidates(shifted, min_area, max_area)
+
+    if len(split_cands) < 2:
+        return [cand]
+
+    result = []
+    for sc in split_cands:
+        result.extend(_split_by_background_gutters(sc, closed_mask, mask_diff, min_area, max_area, depth + 1))
+    return result
+
+
+def _split_mounting_page(
+    cand: dict,
+    work_lab: np.ndarray,
+    blurred_l: np.ndarray,
+    thresh_val: float,
+    min_area: float,
+    max_area: float,
+    total_work_area: float,
+) -> List[dict]:
+    """
+    Detects when a large candidate (>= 20% of image) contains >= 2 solid photos
+    merged by faint handwriting, tape, or page-edge Canny bridges, and re-segments
+    it against the local flat page color using opened LAB distance (no Canny).
+    """
+    if cand["area"] < total_work_area * 0.20:
+        return [cand]
+
+    bx, by, bw, bh = cv2.boundingRect(cand["contour"])
+    if bw < 80 or bh < 80:
+        return [cand]
+
+    sub_lab = work_lab[by:by + bh, bx:bx + bw]
+    sub_l = blurred_l[by:by + bh, bx:bx + bw]
+
+    # Estimate local uniform page color from low-gradient, bright-ish pixels
+    gx = cv2.Sobel(sub_l, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(sub_l, cv2.CV_32F, 0, 1, ksize=3)
+    grad_mag = np.hypot(gx, gy)
+    flat_mask = (grad_mag < 12.0) & (sub_l >= 160)
+    if float(flat_mask.mean()) < 0.20:
+        return [cand]
+
+    local_bg_lab = np.median(sub_lab[flat_mask], axis=0).astype(np.float32)
+    local_diff = np.linalg.norm(sub_lab.astype(np.float32) - local_bg_lab, axis=2)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    strict_thresh = max(thresh_val * 1.4, 18.0)
+    local_mask = (local_diff > strict_thresh).astype(np.uint8) * 255
+    local_opened = cv2.morphologyEx(local_mask, cv2.MORPH_OPEN, kernel)
+
+    sub_contours, _ = cv2.findContours(local_opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    shifted = [sc + np.array([[[bx, by]]], dtype=sc.dtype) for sc in sub_contours]
+    sub_cands, _ = _contours_to_candidates(shifted, min_area, max_area)
+
+    # Filter out hollow L-shaped page-border artifacts (real photos are >= 30% filled)
+    solid_cands = [
+        sc for sc in sub_cands
+        if (cv2.contourArea(sc["contour"]) / max(sc["area"], 1.0)) >= 0.30
+    ]
+
+    if len(solid_cands) >= 2:
+        return solid_cands
+    return [cand]
 
 
 def _split_oversized_contour(
@@ -432,6 +546,19 @@ def detect_scanner_photos(
                     big_c, closed, blurred_l, diff_lab, min_area, max_area, bx, by, bw, bh
                 )
                 raw_candidates.extend(seam_cands if seam_cands else sub_cands)
+
+    # Split any remaining candidates that contain a full-span background gutter
+    # (e.g. stacked photos touching along a single outer scan edge), or are mounting/album pages.
+    split_candidates = []
+    for cand in raw_candidates:
+        for sc in _split_by_background_gutters(cand, closed, mask_diff, min_area, max_area):
+            split_candidates.extend(
+                _split_mounting_page(
+                    sc, work_lab, blurred_l, thresh_val,
+                    min_area, max_area, float(wh * ww)
+                )
+            )
+    raw_candidates = split_candidates
 
     # 7. Non-Maximum Suppression: prefer larger complete photo boxes over overlapping fragments
     kept_rects = []

@@ -3,8 +3,12 @@ ScanSplitter Application Entry Point.
 """
 
 import ctypes
+import faulthandler
 import sys
 from pathlib import Path
+
+if sys.stderr is not None:
+    faulthandler.enable()
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
