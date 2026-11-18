@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 import numpy as np
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QSlider, QCheckBox, QFileDialog, QProgressBar, QMessageBox,
@@ -154,9 +154,19 @@ class ExportDialog(QDialog):
         self.embed_exif_check.setChecked(True)
         layout.addWidget(self.embed_exif_check)
 
+        settings = QSettings("ScanSlicer", "ScanSlicer")
+        open_folder_default = settings.value("export/open_output_folder", True, type=bool)
+
         self.open_folder_check = QCheckBox("Open output folder when finished", self)
-        self.open_folder_check.setChecked(True)
+        self.open_folder_check.setChecked(open_folder_default)
+        self.open_folder_check.toggled.connect(self._on_open_folder_toggled)
         layout.addWidget(self.open_folder_check)
+
+        skip_confirm_default = settings.value("export/skip_confirmation", False, type=bool)
+        self.skip_confirm_check = QCheckBox("Disable confirmation dialog after exporting", self)
+        self.skip_confirm_check.setChecked(skip_confirm_default)
+        self.skip_confirm_check.toggled.connect(self._on_skip_confirm_toggled)
+        layout.addWidget(self.skip_confirm_check)
 
         # Progress bar
         self.progress_bar = QProgressBar(self)
@@ -177,6 +187,12 @@ class ExportDialog(QDialog):
         btn_layout.addWidget(cancel_btn)
         btn_layout.addWidget(self.export_btn)
         layout.addLayout(btn_layout)
+
+    def _on_open_folder_toggled(self, checked: bool):
+        QSettings("ScanSlicer", "ScanSlicer").setValue("export/open_output_folder", checked)
+
+    def _on_skip_confirm_toggled(self, checked: bool):
+        QSettings("ScanSlicer", "ScanSlicer").setValue("export/skip_confirmation", checked)
 
     def _toggle_quality(self, idx):
         is_jpeg = (idx == 0)
@@ -240,10 +256,11 @@ class ExportDialog(QDialog):
             except Exception:
                 pass
 
-        QMessageBox.information(
-            self,
-            "Export Complete",
-            f"Successfully saved {saved_count} cropped photo(s) to:\n{out_dir}"
-        )
+        if not self.skip_confirm_check.isChecked():
+            QMessageBox.information(
+                self,
+                "Export Complete",
+                f"Successfully saved {saved_count} cropped photo(s) to:\n{out_dir}"
+            )
         self.accept()
 

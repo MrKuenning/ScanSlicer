@@ -7,7 +7,7 @@ from typing import List, Optional, Callable
 import cv2
 import numpy as np
 
-from PyQt6.QtCore import Qt, QDate, pyqtSignal
+from PyQt6.QtCore import Qt, QDate, QSettings, pyqtSignal
 from PyQt6.QtGui import QPixmap, QImage, QColor, QIntValidator
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
@@ -413,6 +413,17 @@ class SidebarWidget(QWidget):
         else:
             return f"Sensitivity: {val}"
 
+    @staticmethod
+    def _get_trim_text(val: int) -> str:
+        if val == 0:
+            return "Edge Trim: 0 px (Exact)"
+        elif val <= 5:
+            return f"Edge Trim: {val} px (Tight)"
+        elif val <= 15:
+            return f"Edge Trim: {val} px (Clean)"
+        else:
+            return f"Edge Trim: {val} px (Liberal)"
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SidebarWidget")
@@ -425,8 +436,10 @@ class SidebarWidget(QWidget):
 
         # 1. Detection Settings Section
         det_frame = QFrame(self)
-        det_frame.setStyleSheet("background-color: #1e232d; border-radius: 8px; padding: 6px;")
+        det_frame.setObjectName("DetFrame")
+        det_frame.setStyleSheet("QFrame#DetFrame { background-color: #1e232d; border-radius: 8px; }")
         det_layout = QVBoxLayout(det_frame)
+        det_layout.setContentsMargins(10, 10, 10, 10)
         det_layout.setSpacing(6)
 
         det_title = QLabel("Auto Detection", det_frame)
@@ -470,6 +483,33 @@ class SidebarWidget(QWidget):
         det_layout.addWidget(det_title)
         det_layout.addLayout(sens_info_layout)
         det_layout.addWidget(self.sens_slider)
+
+        # Edge Trim (Inset) Slider to avoid white border slivers
+        saved_trim = int(QSettings("ScanSlicer", "ScanSlicer").value("detection/edge_trim", 3, type=int))
+        trim_info_layout = QHBoxLayout()
+        self.trim_label = QLabel(self._get_trim_text(saved_trim), det_frame)
+        self.trim_label.setStyleSheet("color: #a0aec0; font-size: 11px; border: none;")
+
+        reset_trim_btn = QPushButton("↺ 3", det_frame)
+        reset_trim_btn.setFixedSize(36, 20)
+        reset_trim_btn.setToolTip("Reset edge trim back to default (3 px)")
+        reset_trim_btn.setStyleSheet(reset_sens_btn.styleSheet())
+        reset_trim_btn.clicked.connect(lambda: self.edge_trim_slider.setValue(3))
+
+        trim_info_layout.addWidget(self.trim_label, stretch=1)
+        trim_info_layout.addWidget(reset_trim_btn)
+
+        self.edge_trim_slider = QSlider(Qt.Orientation.Horizontal, det_frame)
+        self.edge_trim_slider.setRange(0, 25)
+        self.edge_trim_slider.setValue(saved_trim)
+        self.edge_trim_slider.setToolTip(
+            "Insets each detected edge inward (in pixels) to trim white scanner borders.\n"
+            "0 = exact edge, 3 = tight default, 10-25 = liberal trim."
+        )
+        self.edge_trim_slider.valueChanged.connect(self._on_edge_trim_changed)
+
+        det_layout.addLayout(trim_info_layout)
+        det_layout.addWidget(self.edge_trim_slider)
 
         self.redetect_btn = QPushButton("🔍 Re-Detect Photos", det_frame)
         self.redetect_btn.setStyleSheet("""
@@ -628,6 +668,10 @@ class SidebarWidget(QWidget):
             card.update_thumbnail()
             w, h = card.model.dimensions
             card.dim_label.setText(f"{w}x{h} px")
+
+    def _on_edge_trim_changed(self, val: int):
+        self.trim_label.setText(self._get_trim_text(val))
+        QSettings("ScanSlicer", "ScanSlicer").setValue("detection/edge_trim", val)
 
     def _on_apply_batch_date(self):
         date_str = self.batch_date_edit.date().toString("yyyy-MM-dd")

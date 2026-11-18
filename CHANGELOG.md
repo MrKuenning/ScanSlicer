@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-11-18
+
+### Added
+- **Edge Trim Slider & Automatic White-Shim Shaving (`app/detector.py`, `app/sidebar.py`)**:
+  - Added an **Edge Trim** slider (`0–25 px`, default `3 px`, persisted via `QSettings`) under **Auto Detection** to uniformly inset all 4 edges of detected boxes.
+  - Added automatic white-border shaving (`_trim_white_edge_slivers`) to step edges inward past residual white scanner shims before applying the trim inset.
+- **Delete Scanned Image Button (`app/main_window.py`, `app/canvas_view.py`)**:
+  - Added **🗑 Delete Scan** to the main toolbar to delete the current scan file from disk (with confirmation) and return to the drop screen.
+- **Skip Export Confirmation Option (`app/export_dialog.py`)**:
+  - Added **"Disable confirmation dialog after exporting"** checkbox, persisted via `QSettings`, reporting completion in the status bar instead.
+
+### Improved
+- **Narrow & Zero-Gap Photo Splitting (`app/detector.py`)**:
+  - Added `_split_oversized_contour` to recursively split merged multi-photo contours along their strongest horizontal/vertical dividing seam without affecting normal gap-separated detections.
+- **Screen-Scaled Crop Handles (`app/crop_item.py`, `app/canvas_view.py`)**:
+  - Scaled corner handles, edge handles, rotation stem/handle, borders, hit-test radii, and labels by the viewport zoom factor so controls stay a consistent screen-pixel size across all image resolutions.
+- **Panning Past Image Edges (`app/canvas_view.py`)**:
+  - Added padded `QGraphicsScene` bounds (`_update_padded_scene_rect`) so you can pan past any edge of the scanned image when zoomed in.
+- **Export & Toolbar UX (`app/export_dialog.py`, `app/main_window.py`, `app/canvas_view.py`)**:
+  - Persisted the **"Open output folder when finished"** checkbox state via `QSettings`.
+  - Automatically unchecks **➕ Add Box** after drawing a manual box.
+  - Renamed **🗑 Delete Selected** to **➖ Remove Selected Box**.
+
+---
+
 ## [1.4.2] - 2026-11-16
 
 ### Improved

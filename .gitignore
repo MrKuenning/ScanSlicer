@@ -22,6 +22,7 @@ releases2
 # local env files
 .env.local
 .env.*.local
+concept.txt
 
 # Log files
 npm-debug.log*

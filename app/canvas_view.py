@@ -32,6 +32,7 @@ class CanvasView(QGraphicsView):
     file_dropped = pyqtSignal(str)          # Emitted when an image file is dropped
     selection_changed = pyqtSignal(object)  # Emitted when selected CropBoxItem changes
     crops_updated = pyqtSignal()            # Emitted when any crop box changes or is deleted
+    add_box_mode_changed = pyqtSignal(bool) # Emitted when manual add-box mode is toggled
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -100,7 +101,7 @@ class CanvasView(QGraphicsView):
         # Add image to scene
         self.pixmap_item = self.scene.addPixmap(pixmap)
         self.pixmap_item.setZValue(0)
-        self.scene.setSceneRect(0, 0, w, h)
+        self._update_padded_scene_rect()
 
         # Update loupe
         self.loupe.set_source_pixmap(pixmap)
@@ -110,11 +111,36 @@ class CanvasView(QGraphicsView):
         self.fit_in_view()
         return True
 
+    def clear_image(self):
+        """Clears the currently loaded scanned image and all crop items."""
+        self.scene.clear()
+        self.crop_items.clear()
+        self.pixmap_item = None
+        self.source_image = None
+        self.loupe.set_focus(None)
+        self.set_add_box_mode(False)
+        self.selection_changed.emit(None)
+
+    def _update_padded_scene_rect(self):
+        """Expands the scene rect around the image so users can pan past image edges."""
+        if not self.pixmap_item:
+            return
+        img_rect = self.pixmap_item.boundingRect()
+        pad = max(img_rect.width(), img_rect.height()) * 0.6
+        self.scene.setSceneRect(img_rect.adjusted(-pad, -pad, pad, pad))
+
+    def _refresh_crop_handle_scales(self):
+        """Updates crop item geometry bounds when the view zoom changes."""
+        for item in self.crop_items:
+            item.prepareGeometryChange()
+            item.update()
+
     def fit_in_view(self):
         """Fits the scanned image comfortably within the canvas view."""
         if self.pixmap_item:
-            self.scene.setSceneRect(self.pixmap_item.boundingRect())
+            self._update_padded_scene_rect()
             self.fitInView(self.pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+            self._refresh_crop_handle_scales()
 
     def set_crops(self, models: List[PhotoModel]):
         """Populates the canvas with interactive crop boxes from PhotoModel items."""
@@ -197,6 +223,7 @@ class CanvasView(QGraphicsView):
             self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
         else:
             self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        self.add_box_mode_changed.emit(enabled)
 
     def set_lock_rectangular(self, lock: bool):
         """Sets whether corner resizing preserves strict 90-degree right angles."""
@@ -236,6 +263,7 @@ class CanvasView(QGraphicsView):
             self.scale(zoom_in_factor, zoom_in_factor)
         else:
             self.scale(zoom_out_factor, zoom_out_factor)
+        self._refresh_crop_handle_scales()
 
     def mousePressEvent(self, event: QMouseEvent):
         # Middle click, Right click, or Space+Left click initiates panning

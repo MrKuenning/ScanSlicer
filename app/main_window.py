@@ -147,6 +147,13 @@ class MainWindow(QMainWindow):
         self.open_action.triggered.connect(self.open_file_dialog)
         toolbar.addAction(self.open_action)
 
+        # Delete Scanned Image Action
+        self.delete_scan_action = QAction("🗑 Delete Scan", self)
+        self.delete_scan_action.setToolTip("Delete the currently loaded scanned image file from disk")
+        self.delete_scan_action.setEnabled(False)
+        self.delete_scan_action.triggered.connect(self.delete_current_scan)
+        toolbar.addAction(self.delete_scan_action)
+
         toolbar.addSeparator()
 
         # Add Crop Box Tool
@@ -156,10 +163,10 @@ class MainWindow(QMainWindow):
         self.add_box_action.triggered.connect(self._toggle_add_box)
         toolbar.addAction(self.add_box_action)
 
-        # Delete Selected Crop Box
-        self.del_box_action = QAction("🗑 Delete Selected", self)
+        # Remove Selected Crop Box
+        self.del_box_action = QAction("➖ Remove Selected Box", self)
         self.del_box_action.setShortcut(QKeySequence.StandardKey.Delete)
-        self.del_box_action.setToolTip("Delete the currently selected crop box (Del)")
+        self.del_box_action.setToolTip("Remove the currently selected crop box (Del)")
         self.del_box_action.triggered.connect(self.canvas_view.delete_selected_crop)
         toolbar.addAction(self.del_box_action)
 
@@ -226,6 +233,7 @@ class MainWindow(QMainWindow):
         self.canvas_view.file_dropped.connect(self.load_image_file)
         self.canvas_view.selection_changed.connect(self._on_canvas_selection_changed)
         self.canvas_view.crops_updated.connect(self._on_canvas_crops_updated)
+        self.canvas_view.add_box_mode_changed.connect(self._on_add_box_mode_changed)
 
         # Sidebar Signals
         self.sidebar.photo_selected.connect(self.canvas_view.select_crop_by_id)
@@ -257,6 +265,7 @@ class MainWindow(QMainWindow):
             return
 
         self.current_file_path = file_path
+        self.delete_scan_action.setEnabled(True)
         self.center_stack.setCurrentWidget(self.canvas_view)
 
         # Run auto detection with current sensitivity
@@ -273,7 +282,8 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Analyzing scanner bed for photos...")
         crops = detect_scanner_photos(
             self.canvas_view.source_image,
-            sensitivity=sensitivity
+            sensitivity=sensitivity,
+            edge_inset=self.sidebar.edge_trim_slider.value()
         )
 
         # Convert to PhotoModel
@@ -319,6 +329,11 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Click and drag on the scanner bed to draw a new crop box.")
         else:
             self.status_bar.showMessage("Add Box mode cancelled.")
+
+    def _on_add_box_mode_changed(self, enabled: bool):
+        self.add_box_action.blockSignals(True)
+        self.add_box_action.setChecked(enabled)
+        self.add_box_action.blockSignals(False)
 
     def _rotate_selected(self, delta_degrees: int):
         sel = self.canvas_view.get_selected_crop()
@@ -394,5 +409,37 @@ class MainWindow(QMainWindow):
             source_filename=Path(self.current_file_path).stem if self.current_file_path else "Scan",
             default_export_dir=source_dir
         )
-        dlg.exec()
+        if dlg.exec():
+            self.status_bar.showMessage(f"Exported {len(models)} photo(s) to {dlg.folder_input.text().strip()}")
+
+    def delete_current_scan(self):
+        """Deletes the currently loaded scanned image from disk after confirmation."""
+        if not self.current_file_path:
+            return
+
+        scan_path = Path(self.current_file_path)
+        reply = QMessageBox.question(
+            self,
+            "Delete Scanned Image",
+            f"Are you sure you want to permanently delete this scanned image?\n\n{scan_path}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            if scan_path.exists():
+                scan_path.unlink()
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Failed", f"Could not delete file:\n{e}")
+            return
+
+        self.canvas_view.clear_image()
+        self.current_file_path = None
+        self.auto_detected_models.clear()
+        self.sidebar.set_photos([], None)
+        self.delete_scan_action.setEnabled(False)
+        self.center_stack.setCurrentWidget(self.drop_prompt)
+        self.status_bar.showMessage(f"Deleted {scan_path.name}.")
 

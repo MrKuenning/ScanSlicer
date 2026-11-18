@@ -45,8 +45,19 @@ class CropBoxItem(QGraphicsPolygonItem):
     HANDLE_BOT_EDGE = 8
     HANDLE_LEFT_EDGE = 9
 
-    HANDLE_RADIUS = 7.0
-    ROT_HANDLE_DIST = 38.0
+    HANDLE_RADIUS = 6.5
+    ROT_HANDLE_DIST = 34.0
+
+    def _view_scale(self) -> float:
+        """Returns the current scene-to-screen scale factor from the attached view."""
+        scene = self.scene()
+        if scene:
+            views = scene.views()
+            if views:
+                s = abs(views[0].transform().m11())
+                if s > 1e-4:
+                    return s
+        return 1.0
 
     def __init__(self, model: PhotoModel, parent=None):
         super().__init__(parent)
@@ -105,7 +116,7 @@ class CropBoxItem(QGraphicsPolygonItem):
         return QPointF(float(c[0]), float(c[1]))
 
     def get_rotation_handle_pos(self) -> QPointF:
-        """Computes rotation handle position extended from the top edge."""
+        """Computes rotation handle position extended from the top edge in screen-scaled units."""
         tl = self.corners[0]
         tr = self.corners[1]
         mid_top = (tl + tr) / 2.0
@@ -117,7 +128,8 @@ class CropBoxItem(QGraphicsPolygonItem):
             # Perpendicular vector pointing outward (counter-clockwise)
             normal = np.array([edge_vec[1], -edge_vec[0]], dtype=np.float32) / edge_len
 
-        rot_pos = mid_top + normal * self.ROT_HANDLE_DIST
+        inv_scale = 1.0 / self._view_scale()
+        rot_pos = mid_top + normal * (self.ROT_HANDLE_DIST * inv_scale)
         return QPointF(float(rot_pos[0]), float(rot_pos[1]))
 
     def get_edge_midpoints(self) -> list[QPointF]:
@@ -131,22 +143,26 @@ class CropBoxItem(QGraphicsPolygonItem):
         ]
 
     def boundingRect(self) -> QRectF:
+        inv_scale = 1.0 / self._view_scale()
+        pad = 25.0 * inv_scale
         rect = super().boundingRect()
         rot_pt = self.get_rotation_handle_pos()
-        rect = rect.united(QRectF(rot_pt.x() - 25, rot_pt.y() - 25, 50, 50))
-        return rect.adjusted(-25, -25, 25, 25)
+        rect = rect.united(QRectF(rot_pt.x() - pad, rot_pt.y() - pad, pad * 2.0, pad * 2.0))
+        return rect.adjusted(-pad, -pad, pad, pad)
 
     def shape(self) -> QPainterPath:
         """
         Custom shape including the polygon, the extended rotation handle,
-        stem line, and corner handles for reliable mouse hit-testing.
+        stem line, and corner handles for reliable mouse hit-testing at any zoom.
         """
+        inv_scale = 1.0 / self._view_scale()
         path = QPainterPath()
         path.addPolygon(self.polygon())
 
         # Include rotation handle and stem
         rot_pt = self.get_rotation_handle_pos()
-        path.addEllipse(rot_pt, self.HANDLE_RADIUS + 12.0, self.HANDLE_RADIUS + 12.0)
+        rot_hit_r = (self.HANDLE_RADIUS + 12.0) * inv_scale
+        path.addEllipse(rot_pt, rot_hit_r, rot_hit_r)
 
         tl = self.corners[0]
         tr = self.corners[1]
@@ -155,28 +171,30 @@ class CropBoxItem(QGraphicsPolygonItem):
         path.lineTo(rot_pt)
 
         # Include corner handles
+        corner_hit_r = (self.HANDLE_RADIUS + 8.0) * inv_scale
         for idx in range(4):
             c_pt = QPointF(float(self.corners[idx, 0]), float(self.corners[idx, 1]))
-            path.addEllipse(c_pt, self.HANDLE_RADIUS + 8.0, self.HANDLE_RADIUS + 8.0)
+            path.addEllipse(c_pt, corner_hit_r, corner_hit_r)
 
         # Stroke to broaden line and edge hit detection
         stroker = QPainterPathStroker()
-        stroker.setWidth(16.0)
+        stroker.setWidth(16.0 * inv_scale)
         return path.united(stroker.createStroke(path))
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: Optional[QWidget] = None):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         is_sel = self.isSelected() or self.model.is_selected
+        inv_scale = 1.0 / self._view_scale()
 
         # 1. Fill polygon with semi-transparent color
         if is_sel:
             fill_color = QColor(0, 190, 255, 60)
             stroke_color = QColor(0, 225, 255)
-            stroke_width = 2.5
+            stroke_width = 2.2 * inv_scale
         else:
             fill_color = QColor(0, 160, 220, 35)
             stroke_color = QColor(0, 180, 230)
-            stroke_width = 1.8
+            stroke_width = 1.5 * inv_scale
 
         painter.setBrush(QBrush(fill_color))
         painter.setPen(QPen(stroke_color, stroke_width, Qt.PenStyle.SolidLine))
@@ -188,30 +206,29 @@ class CropBoxItem(QGraphicsPolygonItem):
         mid_top = QPointF(float((tl[0] + tr[0]) / 2), float((tl[1] + tr[1]) / 2))
         rot_pt = self.get_rotation_handle_pos()
 
-        stem_pen = QPen(stroke_color, 1.5, Qt.PenStyle.DashLine)
+        stem_pen = QPen(stroke_color, 1.5 * inv_scale, Qt.PenStyle.DashLine)
         painter.setPen(stem_pen)
         painter.drawLine(mid_top, rot_pt)
 
         # 3. Draw Rotation Handle
         rot_hover = (self.hover_handle == self.HANDLE_ROT or self.active_handle == self.HANDLE_ROT)
-        rot_radius = self.HANDLE_RADIUS + 2.5 + (3.0 if rot_hover else 0.0)
+        rot_radius = (self.HANDLE_RADIUS + 2.0 + (2.5 if rot_hover else 0.0)) * inv_scale
         painter.setBrush(QBrush(QColor(255, 235, 50) if rot_hover else QColor(255, 195, 0)))
-        painter.setPen(QPen(QColor(15, 20, 30), 2.0))
+        painter.setPen(QPen(QColor(15, 20, 30), 1.8 * inv_scale))
         painter.drawEllipse(rot_pt, rot_radius, rot_radius)
 
         # 4. Draw Corner Handles (TL, TR, BR, BL)
-        corner_names = ["TL", "TR", "BR", "BL"]
         for idx in range(4):
             pt = QPointF(float(self.corners[idx, 0]), float(self.corners[idx, 1]))
             is_hover = (self.hover_handle == idx or self.active_handle == idx)
-            rad = self.HANDLE_RADIUS + (2.5 if is_hover else 0.0)
+            rad = (self.HANDLE_RADIUS + (2.5 if is_hover else 0.0)) * inv_scale
 
             if is_hover:
                 c_brush = QBrush(QColor(0, 255, 170))  # Bright mint green when hovering
-                c_pen = QPen(QColor(10, 30, 20), 2.0)
+                c_pen = QPen(QColor(10, 30, 20), 1.8 * inv_scale)
             else:
                 c_brush = QBrush(QColor(255, 255, 255))
-                c_pen = QPen(QColor(0, 150, 230), 2.0)
+                c_pen = QPen(QColor(0, 150, 230), 1.8 * inv_scale)
 
             painter.setBrush(c_brush)
             painter.setPen(c_pen)
@@ -222,12 +239,12 @@ class CropBoxItem(QGraphicsPolygonItem):
         for idx, e_pt in enumerate(edge_pts):
             handle_code = self.HANDLE_TOP_EDGE + idx
             is_hover = (self.hover_handle == handle_code or self.active_handle == handle_code)
-            size = 8.0 if is_hover else 6.0
+            size = (8.0 if is_hover else 6.0) * inv_scale
             painter.setBrush(QBrush(QColor(0, 255, 220) if is_hover else QColor(200, 220, 240)))
-            painter.setPen(QPen(QColor(20, 30, 45), 1.2))
-            painter.drawRect(QRectF(e_pt.x() - size/2, e_pt.y() - size/2, size, size))
+            painter.setPen(QPen(QColor(20, 30, 45), 1.2 * inv_scale))
+            painter.drawRect(QRectF(e_pt.x() - size / 2, e_pt.y() - size / 2, size, size))
 
-        # 6. Draw Badge / Label in center of top edge
+        # 6. Draw Badge / Label at center in fixed screen-pixel size
         center_pt = self.get_center()
         badge_text = f"Photo #{self.model.id}"
         if self.model.date_str:
@@ -235,40 +252,47 @@ class CropBoxItem(QGraphicsPolygonItem):
         w_px, h_px = self.model.dimensions
         badge_text += f" ({w_px}x{h_px})"
 
-        font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+        painter.save()
+        painter.translate(center_pt)
+        painter.scale(inv_scale, inv_scale)
+
+        font = QFont("Segoe UI", 9, QFont.Weight.Bold)
         painter.setFont(font)
         fm = painter.fontMetrics()
         text_w = fm.horizontalAdvance(badge_text) + 16
         text_h = fm.height() + 8
 
-        badge_rect = QRectF(center_pt.x() - text_w / 2, center_pt.y() - text_h / 2, text_w, text_h)
+        badge_rect = QRectF(-text_w / 2.0, -text_h / 2.0, text_w, text_h)
         painter.setBrush(QBrush(QColor(18, 24, 38, 220)))
         painter.setPen(QPen(stroke_color, 1.2))
         painter.drawRoundedRect(badge_rect, 6, 6)
 
         painter.setPen(QColor(245, 250, 255))
         painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, badge_text)
+        painter.restore()
 
     def hit_test_handle(self, pos: QPointF) -> int:
-        """Determines which handle is hit at pos."""
+        """Determines which handle is hit at pos (using screen-scaled hit radii)."""
+        inv_scale = 1.0 / self._view_scale()
+
         # 1. Test rotation handle (generous hit target)
         rot_pt = self.get_rotation_handle_pos()
         dist_rot = math.hypot(pos.x() - rot_pt.x(), pos.y() - rot_pt.y())
-        if dist_rot <= self.HANDLE_RADIUS + 12.0:
+        if dist_rot <= (self.HANDLE_RADIUS + 12.0) * inv_scale:
             return self.HANDLE_ROT
 
         # 2. Test corner handles
         for idx in range(4):
             c_pt = QPointF(float(self.corners[idx, 0]), float(self.corners[idx, 1]))
             dist_c = math.hypot(pos.x() - c_pt.x(), pos.y() - c_pt.y())
-            if dist_c <= self.HANDLE_RADIUS + 8.0:
+            if dist_c <= (self.HANDLE_RADIUS + 8.0) * inv_scale:
                 return idx
 
         # 3. Test edge handles
         edge_pts = self.get_edge_midpoints()
         for idx, e_pt in enumerate(edge_pts):
             dist_e = math.hypot(pos.x() - e_pt.x(), pos.y() - e_pt.y())
-            if dist_e <= self.HANDLE_RADIUS + 6.0:
+            if dist_e <= (self.HANDLE_RADIUS + 6.0) * inv_scale:
                 return self.HANDLE_TOP_EDGE + idx
 
         # 4. Test inside polygon

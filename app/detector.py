@@ -148,11 +148,183 @@ def _contours_to_candidates(contours, min_area: float, max_area: float):
     return candidates, oversized
 
 
+def _split_oversized_contour(
+    big_c,
+    sub_mask_src: np.ndarray,
+    blurred_l: np.ndarray,
+    diff_lab: np.ndarray,
+    min_area: float,
+    max_area: float,
+    bx: int,
+    by: int,
+    bw: int,
+    bh: int,
+    depth: int = 0
+):
+    """
+    Splits a merged multi-photo contour (narrow or zero gap) along its strongest
+    horizontal/vertical dividing seam and returns validated crop candidates.
+    """
+    if depth > 2 or bw < 60 or bh < 60:
+        return []
+
+    sub_mask = sub_mask_src[by:by + bh, bx:bx + bw].copy()
+    sub_l = blurred_l[by:by + bh, bx:bx + bw]
+    sub_diff = diff_lab[by:by + bh, bx:bx + bw]
+
+    grad_y = np.abs(cv2.Sobel(sub_l, cv2.CV_32F, 0, 1, ksize=3))
+    grad_x = np.abs(cv2.Sobel(sub_l, cv2.CV_32F, 1, 0, ksize=3))
+
+    best_orient = None
+    best_pos = 0
+    best_score = -1.0
+    best_edge_frac = 0.0
+
+    # Search horizontal seams
+    y_start, y_end = max(4, int(bh * 0.15)), min(bh - 4, int(bh * 0.85))
+    for y in range(y_start, y_end):
+        e_frac = float((grad_y[y - 3:y + 4, :].max(axis=0) > 25.0).mean())
+        g_frac = float((sub_diff[y - 3:y + 4, :].min(axis=0) < 25.0).mean())
+        score = e_frac + 0.5 * g_frac
+        if score > best_score:
+            best_score = score
+            best_orient = "h"
+            best_pos = y
+            best_edge_frac = e_frac
+
+    # Search vertical seams
+    x_start, x_end = max(4, int(bw * 0.15)), min(bw - 4, int(bw * 0.85))
+    for x in range(x_start, x_end):
+        e_frac = float((grad_x[:, x - 3:x + 4].max(axis=1) > 25.0).mean())
+        g_frac = float((sub_diff[:, x - 3:x + 4].min(axis=1) < 25.0).mean())
+        score = e_frac + 0.5 * g_frac
+        if score > best_score:
+            best_score = score
+            best_orient = "v"
+            best_pos = x
+            best_edge_frac = e_frac
+
+    if best_orient is None or best_edge_frac < 0.65:
+        return []
+
+    if best_orient == "h":
+        sub_mask[max(0, best_pos - 2):min(bh, best_pos + 3), :] = 0
+    else:
+        sub_mask[:, max(0, best_pos - 2):min(bw, best_pos + 3)] = 0
+
+    sub_contours, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    shifted = [sc + np.array([[[bx, by]]], dtype=sc.dtype) for sc in sub_contours]
+    cands, still_big = _contours_to_candidates(shifted, min_area, max_area)
+
+    for sc in still_big:
+        sx, sy, sw, sh = cv2.boundingRect(sc)
+        cands.extend(_split_oversized_contour(
+            sc, sub_mask_src, blurred_l, diff_lab, min_area, max_area,
+            sx, sy, sw, sh, depth=depth + 1
+        ))
+
+    return cands
+
+
+def inset_corners(corners: np.ndarray, inset_px: float) -> np.ndarray:
+    """
+    Moves all 4 edges of a [TL, TR, BR, BL] quadrilateral inward by inset_px pixels
+    to cleanly trim edge slivers.
+    """
+    if inset_px <= 0:
+        return corners
+
+    pts = order_corners(corners).copy()
+    tl, tr, br, bl = pts
+
+    top_vec = tr - tl
+    left_vec = bl - tl
+    w_len = float(np.linalg.norm(top_vec))
+    h_len = float(np.linalg.norm(left_vec))
+    if w_len < 1e-4 or h_len < 1e-4:
+        return pts
+
+    # Clamp inset so the box never collapses or inverts
+    d = min(float(inset_px), w_len * 0.25, h_len * 0.25)
+    u = top_vec / w_len   # left -> right
+    v = left_vec / h_len  # top -> bottom
+
+    return np.array([
+        tl + d * u + d * v,
+        tr - d * u + d * v,
+        br - d * u - d * v,
+        bl + d * u - d * v,
+    ], dtype=np.float32)
+
+
+def _trim_white_edge_slivers(
+    corners: np.ndarray,
+    work_lab: np.ndarray,
+    diff_lab: np.ndarray,
+    thresh_val: float,
+    scale: float,
+    max_trim_work_px: int = 20
+) -> np.ndarray:
+    """
+    Walks each of the 4 edges inward (in work_img space) while >= 75% of the edge
+    consists of white/platen background pixels, eliminating residual white shims.
+    """
+    wh, ww = work_lab.shape[:2]
+    pts = order_corners(corners).copy() * scale
+
+    for _ in range(max_trim_work_px):
+        tl, tr, br, bl = pts
+        w_vec = tr - tl
+        h_vec = bl - tl
+        w_len = float(np.linalg.norm(w_vec))
+        h_len = float(np.linalg.norm(h_vec))
+        if w_len < 40.0 or h_len < 40.0:
+            break
+
+        u = w_vec / w_len
+        v = h_vec / h_len
+        moved = False
+
+        def _is_edge_white(p0: np.ndarray, p1: np.ndarray) -> bool:
+            ts = np.linspace(0.1, 0.9, 25)
+            xs = np.clip(np.round(p0[0] + ts * (p1[0] - p0[0])).astype(int), 0, ww - 1)
+            ys = np.clip(np.round(p0[1] + ts * (p1[1] - p0[1])).astype(int), 0, wh - 1)
+            l_vals = work_lab[ys, xs, 0]
+            a_vals = np.abs(work_lab[ys, xs, 1].astype(np.float32) - 128.0)
+            b_vals = np.abs(work_lab[ys, xs, 2].astype(np.float32) - 128.0)
+            d_vals = diff_lab[ys, xs]
+            white_or_bg = ((l_vals >= 232) & (a_vals <= 12.0) & (b_vals <= 12.0)) | (d_vals <= thresh_val)
+            return float(white_or_bg.mean()) >= 0.75
+
+        if _is_edge_white(tl, tr):
+            pts[0] += v
+            pts[1] += v
+            moved = True
+        if _is_edge_white(bl, br):
+            pts[2] -= v
+            pts[3] -= v
+            moved = True
+        if _is_edge_white(tl, bl):
+            pts[0] += u
+            pts[3] += u
+            moved = True
+        if _is_edge_white(tr, br):
+            pts[1] -= u
+            pts[2] -= u
+            moved = True
+
+        if not moved:
+            break
+
+    return (pts / scale).astype(np.float32)
+
+
 def detect_scanner_photos(
     image: np.ndarray,
     sensitivity: int = 50,
     min_area_ratio: float = 0.015,
-    max_area_ratio: float = 0.90
+    max_area_ratio: float = 0.90,
+    edge_inset: int = 3
 ) -> List[DetectedCrop]:
     """
     Detects photos on a flatbed scanner bed or album page.
@@ -243,8 +415,8 @@ def detect_scanner_photos(
 
     raw_candidates, oversized = _contours_to_candidates(contours, min_area, max_area)
 
-    # If a giant contour (> max_area) swallowed multiple photos across a narrow gutter/border,
-    # split it using mask_diff opened by 3x3 (severs thin edge bridges).
+    # If a giant contour (> max_area) swallowed multiple photos across a narrow or zero gutter,
+    # first try mask_diff opened by 3x3; if still merged, split along the strongest dividing seam.
     if oversized:
         opened_diff = cv2.morphologyEx(mask_diff, cv2.MORPH_OPEN, kernel)
         for big_c in oversized:
@@ -252,8 +424,14 @@ def detect_scanner_photos(
             sub_mask = opened_diff[by:by + bh, bx:bx + bw]
             sub_contours, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             shifted = [sc + np.array([[[bx, by]]], dtype=sc.dtype) for sc in sub_contours]
-            sub_cands, _ = _contours_to_candidates(shifted, min_area, max_area)
-            raw_candidates.extend(sub_cands)
+            sub_cands, still_big = _contours_to_candidates(shifted, min_area, max_area)
+            if len(sub_cands) >= 2 and not still_big:
+                raw_candidates.extend(sub_cands)
+            else:
+                seam_cands = _split_oversized_contour(
+                    big_c, closed, blurred_l, diff_lab, min_area, max_area, bx, by, bw, bh
+                )
+                raw_candidates.extend(seam_cands if seam_cands else sub_cands)
 
     # 7. Non-Maximum Suppression: prefer larger complete photo boxes over overlapping fragments
     kept_rects = []
@@ -289,9 +467,14 @@ def detect_scanner_photos(
         orig_rh = rh / scale
         orig_rect = ((orig_cx, orig_cy), (orig_rw, orig_rh), angle)
 
-        # Get guaranteed 90-degree corners
+        # Get guaranteed 90-degree corners, trim residual white border shims, then apply edge_inset
         corners = get_rect_corners(orig_rect)
-        orig_area = orig_rw * orig_rh
+        corners = _trim_white_edge_slivers(corners, work_lab, diff_lab, thresh_val, scale)
+        if edge_inset > 0:
+            corners = inset_corners(corners, float(edge_inset))
+        orig_area = float(
+            np.linalg.norm(corners[1] - corners[0]) * np.linalg.norm(corners[3] - corners[0])
+        )
 
         detected.append(DetectedCrop(
             id=idx,
